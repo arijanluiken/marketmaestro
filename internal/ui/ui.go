@@ -63,14 +63,14 @@ func (u *UIActor) Receive(ctx *actor.Context) {
 
 func (u *UIActor) onStarted(ctx *actor.Context) {
 	u.logger.Info().Msg("UI actor started")
-	
+
 	// Auto-start the server
 	ctx.Send(ctx.PID(), StartServerMsg{})
 }
 
 func (u *UIActor) onStopped(ctx *actor.Context) {
 	u.logger.Info().Msg("UI actor stopped")
-	
+
 	if u.server != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -80,20 +80,20 @@ func (u *UIActor) onStopped(ctx *actor.Context) {
 
 func (u *UIActor) onStartServer(ctx *actor.Context) {
 	u.logger.Info().Int("port", u.config.UI.Port).Msg("Starting UI server")
-	
+
 	u.setupRouter()
-	
+
 	u.server = &http.Server{
 		Addr:    fmt.Sprintf(":%d", u.config.UI.Port),
 		Handler: u.router,
 	}
-	
+
 	go func() {
 		if err := u.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			u.logger.Error().Err(err).Msg("UI server error")
 		}
 	}()
-	
+
 	u.logger.Info().Msg("UI server started successfully")
 }
 
@@ -101,12 +101,12 @@ func (u *UIActor) onStopServer(ctx *actor.Context) {
 	if u.server == nil {
 		return
 	}
-	
+
 	u.logger.Info().Msg("Stopping UI server")
-	
+
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	
+
 	if err := u.server.Shutdown(shutdownCtx); err != nil {
 		u.logger.Error().Err(err).Msg("Error stopping UI server")
 	} else {
@@ -117,30 +117,30 @@ func (u *UIActor) onStopServer(ctx *actor.Context) {
 func (u *UIActor) onStatus(ctx *actor.Context) {
 	status := map[string]interface{}{
 		"server_running": u.server != nil,
-		"port":          u.config.UI.Port,
-		"timestamp":     time.Now(),
+		"port":           u.config.UI.Port,
+		"timestamp":      time.Now(),
 	}
-	
+
 	ctx.Respond(status)
 }
 
 func (u *UIActor) setupRouter() {
 	r := chi.NewRouter()
-	
+
 	// Middleware
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
-	
+
 	// Serve embedded static assets
 	r.Handle("/assets/*", http.FileServer(http.FS(assets)))
-	
+
 	// Routes
 	r.Get("/", u.handleIndex)
 	r.Get("/dashboard", u.handleDashboard)
 	r.Get("/strategies", u.handleStrategies)
 	r.Get("/portfolio", u.handlePortfolio)
 	r.Get("/settings", u.handleSettings)
-	
+
 	u.router = r
 }
 
@@ -205,7 +205,7 @@ func (u *UIActor) handleIndex(w http.ResponseWriter, r *http.Request) {
     </script>
 </body>
 </html>`
-	
+
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }
@@ -264,7 +264,7 @@ func (u *UIActor) handleDashboard(w http.ResponseWriter, r *http.Request) {
     </div>
 </body>
 </html>`
-	
+
 	w.Header().Set("Content-Type", "text/html")
 	w.Write([]byte(html))
 }
@@ -276,7 +276,150 @@ func (u *UIActor) handleStrategies(w http.ResponseWriter, r *http.Request) {
 
 func (u *UIActor) handlePortfolio(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	w.Write([]byte("<h1>Portfolio - Coming Soon</h1>"))
+	html := `
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Portfolio - Mercantile Trading Bot</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .header { margin-bottom: 30px; }
+        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }
+        .stat-card { background: #f8f9fa; padding: 20px; border-radius: 8px; border: 1px solid #e9ecef; }
+        .stat-value { font-size: 24px; font-weight: bold; color: #2c3e50; }
+        .stat-label { color: #6c757d; font-size: 14px; }
+        .positions { margin-top: 20px; }
+        .position-table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        .position-table th, .position-table td { padding: 12px; text-align: left; border-bottom: 1px solid #e9ecef; }
+        .position-table th { background: #f8f9fa; font-weight: 600; }
+        .positive { color: #28a745; }
+        .negative { color: #dc3545; }
+        .loading { text-align: center; padding: 20px; color: #6c757d; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Portfolio Overview</h1>
+            <p>Real-time portfolio tracking and position management</p>
+        </div>
+        
+        <div class="stats" id="portfolio-stats">
+            <div class="stat-card">
+                <div class="stat-value" id="total-value">Loading...</div>
+                <div class="stat-label">Total Value</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="available-cash">Loading...</div>
+                <div class="stat-label">Available Cash</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="unrealized-pnl">Loading...</div>
+                <div class="stat-label">Unrealized P&L</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="realized-pnl">Loading...</div>
+                <div class="stat-label">Realized P&L</div>
+            </div>
+        </div>
+        
+        <div class="positions">
+            <h2>Active Positions</h2>
+            <div id="positions-content">
+                <div class="loading">Loading positions...</div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Fetch portfolio data from API
+        async function loadPortfolioData() {
+            try {
+                const response = await fetch('/api/portfolio');
+                const data = await response.json();
+                
+                document.getElementById('total-value').textContent = '$' + data.total_value.toLocaleString();
+                document.getElementById('available-cash').textContent = '$' + data.available_cash.toLocaleString();
+                document.getElementById('unrealized-pnl').textContent = '$' + data.unrealized_pnl.toLocaleString();
+                document.getElementById('realized-pnl').textContent = '$' + data.realized_pnl.toLocaleString();
+                
+                // Update P&L colors
+                const unrealizedEl = document.getElementById('unrealized-pnl');
+                const realizedEl = document.getElementById('realized-pnl');
+                
+                unrealizedEl.className = 'stat-value ' + (data.unrealized_pnl >= 0 ? 'positive' : 'negative');
+                realizedEl.className = 'stat-value ' + (data.realized_pnl >= 0 ? 'positive' : 'negative');
+                
+                // Load positions
+                if (data.positions && data.positions.length > 0) {
+                    renderPositions(data.positions);
+                } else {
+                    loadExchangePositions();
+                }
+            } catch (error) {
+                console.error('Error loading portfolio data:', error);
+                document.getElementById('positions-content').innerHTML = '<div class="loading">Error loading portfolio data</div>';
+            }
+        }
+        
+        async function loadExchangePositions() {
+            try {
+                const response = await fetch('/api/exchange/bybit/positions');
+                const data = await response.json();
+                
+                if (data.positions && data.positions.length > 0) {
+                    renderPositions(data.positions);
+                } else {
+                    document.getElementById('positions-content').innerHTML = '<div class="loading">No active positions</div>';
+                }
+            } catch (error) {
+                console.error('Error loading exchange positions:', error);
+                document.getElementById('positions-content').innerHTML = '<div class="loading">Error loading positions</div>';
+            }
+        }
+        
+        function renderPositions(positions) {
+            const html = ` + "`" + `
+                <table class="position-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Quantity</th>
+                            <th>Avg Price</th>
+                            <th>Current Price</th>
+                            <th>Unrealized P&L</th>
+                            <th>Side</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${positions.map(pos => ` + "`" + `
+                            <tr>
+                                <td>${pos.symbol}</td>
+                                <td>${pos.quantity}</td>
+                                <td>$${pos.average_price.toLocaleString()}</td>
+                                <td>$${pos.current_price.toLocaleString()}</td>
+                                <td class="${pos.unrealized_pnl >= 0 ? 'positive' : 'negative'}">
+                                    $${pos.unrealized_pnl.toLocaleString()}
+                                </td>
+                                <td>${pos.side || 'long'}</td>
+                            </tr>
+                        ` + "`" + `).join('')}
+                    </tbody>
+                </table>
+            ` + "`" + `;
+            document.getElementById('positions-content').innerHTML = html;
+        }
+        
+        // Load data on page load
+        loadPortfolioData();
+        
+        // Refresh every 30 seconds
+        setInterval(loadPortfolioData, 30000);
+    </script>
+</body>
+</html>`
+	w.Write([]byte(html))
 }
 
 func (u *UIActor) handleSettings(w http.ResponseWriter, r *http.Request) {

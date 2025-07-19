@@ -1,11 +1,11 @@
 package strategy
 
 import (
-	"embed"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -14,9 +14,6 @@ import (
 
 	"github.com/arijanluiken/mercantile/pkg/exchanges"
 )
-
-//go:embed scripts/*.star
-var strategyScripts embed.FS
 
 // TechnicalIndicators provides common trading indicators
 type TechnicalIndicators struct {
@@ -209,9 +206,15 @@ func (se *StrategyEngine) ExecuteStrategy(strategyName string, ctx *StrategyCont
 
 // loadStrategy loads and compiles a strategy script
 func (se *StrategyEngine) loadStrategy(name string) (string, error) {
-	// First try embedded scripts
-	embeddedPath := fmt.Sprintf("scripts/%s.star", name)
-	if data, err := strategyScripts.ReadFile(embeddedPath); err == nil {
+	// First try strategy directory
+	strategyPath := filepath.Join("strategy", fmt.Sprintf("%s.star", name))
+	if data, err := os.ReadFile(strategyPath); err == nil {
+		return string(data), nil
+	}
+
+	// Then try root directory
+	rootPath := fmt.Sprintf("%s.star", name)
+	if data, err := os.ReadFile(rootPath); err == nil {
 		return string(data), nil
 	}
 
@@ -296,6 +299,277 @@ func (se *StrategyEngine) extractSignal(result starlark.StringDict) (*StrategySi
 	}
 
 	return signal, nil
+}
+
+// ExecuteKlineCallback runs the on_kline callback in a strategy script
+func (se *StrategyEngine) ExecuteKlineCallback(strategyName string, ctx *StrategyContext, kline *exchanges.Kline) (*StrategySignal, error) {
+	// Load strategy script
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create Starlark thread
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-kline", strategyName),
+	}
+
+	// Prepare globals with context data
+	globals := se.prepareGlobals(ctx)
+
+	// Add kline object
+	klineDict := starlark.NewDict(6)
+	klineDict.SetKey(starlark.String("timestamp"), starlark.String(kline.Timestamp.Format("2006-01-02T15:04:05Z")))
+	klineDict.SetKey(starlark.String("open"), starlark.Float(kline.Open))
+	klineDict.SetKey(starlark.String("high"), starlark.Float(kline.High))
+	klineDict.SetKey(starlark.String("low"), starlark.Float(kline.Low))
+	klineDict.SetKey(starlark.String("close"), starlark.Float(kline.Close))
+	klineDict.SetKey(starlark.String("volume"), starlark.Float(kline.Volume))
+	globals["kline"] = klineDict
+
+	// Execute strategy
+	result, err := starlark.ExecFile(thread, strategyName, script, globals)
+	if err != nil {
+		return nil, fmt.Errorf("strategy execution failed: %w", err)
+	}
+
+	// Check if on_kline function exists and call it
+	if onKlineFn, ok := result["on_kline"]; ok {
+		if fn, ok := onKlineFn.(*starlark.Function); ok {
+			args := starlark.Tuple{globals["kline"]}
+			signalResult, err := starlark.Call(thread, fn, args, nil)
+			if err != nil {
+				return nil, fmt.Errorf("on_kline callback failed: %w", err)
+			}
+
+			// Extract signal from callback result
+			if signalDict, ok := signalResult.(*starlark.Dict); ok {
+				return se.extractSignalFromDict(signalDict)
+			}
+		}
+	}
+
+	// Fallback to legacy execution if no callback
+	return se.extractSignal(result)
+}
+
+// ExecuteOrderBookCallback runs the on_orderbook callback in a strategy script
+func (se *StrategyEngine) ExecuteOrderBookCallback(strategyName string, ctx *StrategyContext, orderBook *exchanges.OrderBook) (*StrategySignal, error) {
+	// Load strategy script
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create Starlark thread
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-orderbook", strategyName),
+	}
+
+	// Prepare globals with context data
+	globals := se.prepareGlobals(ctx)
+
+	// Add orderbook object
+	orderBookDict := starlark.NewDict(4)
+	orderBookDict.SetKey(starlark.String("symbol"), starlark.String(orderBook.Symbol))
+	orderBookDict.SetKey(starlark.String("timestamp"), starlark.String(orderBook.Timestamp.Format("2006-01-02T15:04:05Z")))
+
+	// Add bids and asks
+	bids := starlark.NewList([]starlark.Value{})
+	for _, bid := range orderBook.Bids {
+		bidDict := starlark.NewDict(2)
+		bidDict.SetKey(starlark.String("price"), starlark.Float(bid.Price))
+		bidDict.SetKey(starlark.String("quantity"), starlark.Float(bid.Quantity))
+		bids.Append(bidDict)
+	}
+
+	asks := starlark.NewList([]starlark.Value{})
+	for _, ask := range orderBook.Asks {
+		askDict := starlark.NewDict(2)
+		askDict.SetKey(starlark.String("price"), starlark.Float(ask.Price))
+		askDict.SetKey(starlark.String("quantity"), starlark.Float(ask.Quantity))
+		asks.Append(askDict)
+	}
+
+	orderBookDict.SetKey(starlark.String("bids"), bids)
+	orderBookDict.SetKey(starlark.String("asks"), asks)
+	globals["orderbook"] = orderBookDict
+
+	// Execute strategy
+	result, err := starlark.ExecFile(thread, strategyName, script, globals)
+	if err != nil {
+		return nil, fmt.Errorf("strategy execution failed: %w", err)
+	}
+
+	// Check if on_orderbook function exists and call it
+	if onOrderBookFn, ok := result["on_orderbook"]; ok {
+		if fn, ok := onOrderBookFn.(*starlark.Function); ok {
+			args := starlark.Tuple{globals["orderbook"]}
+			signalResult, err := starlark.Call(thread, fn, args, nil)
+			if err != nil {
+				return nil, fmt.Errorf("on_orderbook callback failed: %w", err)
+			}
+
+			// Extract signal from callback result
+			if signalDict, ok := signalResult.(*starlark.Dict); ok {
+				return se.extractSignalFromDict(signalDict)
+			}
+		}
+	}
+
+	// Fallback to legacy execution if no callback
+	return se.extractSignal(result)
+}
+
+// ExecuteTickerCallback runs the on_ticker callback in a strategy script
+func (se *StrategyEngine) ExecuteTickerCallback(strategyName string, ctx *StrategyContext, ticker *exchanges.Ticker) (*StrategySignal, error) {
+	// Load strategy script
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create Starlark thread
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-ticker", strategyName),
+	}
+
+	// Prepare globals with context data
+	globals := se.prepareGlobals(ctx)
+
+	// Add ticker object
+	tickerDict := starlark.NewDict(4)
+	tickerDict.SetKey(starlark.String("symbol"), starlark.String(ticker.Symbol))
+	tickerDict.SetKey(starlark.String("price"), starlark.Float(ticker.Price))
+	tickerDict.SetKey(starlark.String("volume"), starlark.Float(ticker.Volume))
+	tickerDict.SetKey(starlark.String("timestamp"), starlark.String(ticker.Timestamp.Format("2006-01-02T15:04:05Z")))
+	globals["ticker"] = tickerDict
+
+	// Execute strategy
+	result, err := starlark.ExecFile(thread, strategyName, script, globals)
+	if err != nil {
+		return nil, fmt.Errorf("strategy execution failed: %w", err)
+	}
+
+	// Check if on_ticker function exists and call it
+	if onTickerFn, ok := result["on_ticker"]; ok {
+		if fn, ok := onTickerFn.(*starlark.Function); ok {
+			args := starlark.Tuple{globals["ticker"]}
+			signalResult, err := starlark.Call(thread, fn, args, nil)
+			if err != nil {
+				return nil, fmt.Errorf("on_ticker callback failed: %w", err)
+			}
+
+			// Extract signal from callback result
+			if signalDict, ok := signalResult.(*starlark.Dict); ok {
+				return se.extractSignalFromDict(signalDict)
+			}
+		}
+	}
+
+	// Fallback to legacy execution if no callback
+	return se.extractSignal(result)
+}
+
+// extractSignalFromDict extracts a trading signal from a Starlark dictionary
+func (se *StrategyEngine) extractSignalFromDict(dict *starlark.Dict) (*StrategySignal, error) {
+	signal := &StrategySignal{
+		Action: "hold",
+		Type:   "market",
+	}
+
+	if action, found, _ := dict.Get(starlark.String("action")); found {
+		if s, ok := action.(starlark.String); ok {
+			signal.Action = string(s)
+		}
+	}
+
+	if quantity, found, _ := dict.Get(starlark.String("quantity")); found {
+		if f, ok := quantity.(starlark.Float); ok {
+			signal.Quantity = float64(f)
+		}
+	}
+
+	if price, found, _ := dict.Get(starlark.String("price")); found {
+		if f, ok := price.(starlark.Float); ok {
+			signal.Price = float64(f)
+		}
+	}
+
+	if orderType, found, _ := dict.Get(starlark.String("type")); found {
+		if s, ok := orderType.(starlark.String); ok {
+			signal.Type = string(s)
+		}
+	}
+
+	if reason, found, _ := dict.Get(starlark.String("reason")); found {
+		if s, ok := reason.(starlark.String); ok {
+			signal.Reason = string(s)
+		}
+	}
+
+	return signal, nil
+}
+
+// GetStrategyInterval extracts the interval from a strategy script
+func (se *StrategyEngine) GetStrategyInterval(strategyName string) (string, error) {
+	// Load strategy script
+	scriptContent, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return "", fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Simple text parsing approach to find interval in settings function
+	lines := strings.Split(scriptContent, "\n")
+	inSettingsFunction := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Check if we're entering the settings function
+		if strings.HasPrefix(line, "def settings()") {
+			inSettingsFunction = true
+			continue
+		}
+
+		// Check if we're exiting the settings function
+		if inSettingsFunction && strings.HasPrefix(line, "def ") {
+			break
+		}
+
+		// Look for interval within settings function
+		if inSettingsFunction && strings.Contains(line, "interval") && strings.Contains(line, ":") {
+			parts := strings.Split(line, ":")
+			if len(parts) >= 2 {
+				intervalPart := strings.TrimSpace(parts[1])
+				// Remove quotes and comments
+				intervalPart = strings.Split(intervalPart, ",")[0] // Remove trailing comma
+				intervalPart = strings.Split(intervalPart, "#")[0] // Remove comments
+				intervalPart = strings.TrimSpace(intervalPart)
+				intervalPart = strings.Trim(intervalPart, `"'`) // Remove quotes
+				if intervalPart != "" {
+					return intervalPart, nil
+				}
+			}
+		}
+
+		// Also check for legacy interval variable at top level (fallback)
+		if !inSettingsFunction && strings.HasPrefix(line, "interval") && strings.Contains(line, "=") {
+			parts := strings.Split(line, "=")
+			if len(parts) >= 2 {
+				intervalPart := strings.TrimSpace(parts[1])
+				intervalPart = strings.Split(intervalPart, "#")[0] // Remove comments
+				intervalPart = strings.TrimSpace(intervalPart)
+				intervalPart = strings.Trim(intervalPart, `"'`) // Remove quotes
+				if intervalPart != "" {
+					return intervalPart, nil
+				}
+			}
+		}
+	}
+
+	// Default interval if not specified in script
+	return "1m", nil
 }
 
 // Technical Indicator Functions

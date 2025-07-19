@@ -3,6 +3,7 @@ package order
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/anthdm/hollywood/actor"
@@ -13,24 +14,95 @@ import (
 	"github.com/arijanluiken/mercantile/pkg/exchanges"
 )
 
+// Enhanced order types
+const (
+	OrderTypeMarket     = "market"
+	OrderTypeLimit      = "limit"
+	OrderTypeStopMarket = "stop_market"
+	OrderTypeStopLimit  = "stop_limit"
+	OrderTypeTrailing   = "trailing_stop"
+)
+
+// Order statuses
+const (
+	StatusPending         = "pending"
+	StatusOpen            = "open"
+	StatusPartiallyFilled = "partially_filled"
+	StatusFilled          = "filled"
+	StatusCancelled       = "cancelled"
+	StatusRejected        = "rejected"
+)
+
 // Messages for order manager actor communication
 type (
 	PlaceOrderMsg struct {
-		Symbol   string
-		Side     string // "buy" or "sell"
-		Type     string // "market" or "limit"
-		Quantity float64
-		Price    float64
-		Reason   string
+		Symbol       string
+		Side         string // "buy" or "sell"
+		Type         string // OrderType constants
+		Quantity     float64
+		Price        float64
+		StopPrice    float64 // For stop orders
+		TrailAmount  float64 // For trailing stops (absolute)
+		TrailPercent float64 // For trailing stops (percentage)
+		TimeInForce  string  // "GTC", "IOC", "FOK"
+		Reason       string
 	}
+
+	PlaceTrailingStopMsg struct {
+		Symbol       string
+		Side         string
+		Quantity     float64
+		TrailAmount  float64 // Absolute trail amount
+		TrailPercent float64 // Percentage trail amount
+		Reason       string
+	}
+
+	PlaceStopOrderMsg struct {
+		Symbol     string
+		Side       string
+		Quantity   float64
+		StopPrice  float64
+		LimitPrice float64 // Optional, for stop-limit orders
+		Reason     string
+	}
+
 	CancelOrderMsg struct {
 		OrderID string
 		Symbol  string
 	}
+
+	ModifyOrderMsg struct {
+		OrderID      string
+		Symbol       string
+		NewQuantity  *float64
+		NewPrice     *float64
+		NewStopPrice *float64
+	}
+
 	GetOrdersMsg   struct{ Symbol string }
-	OrderUpdateMsg struct{ Order *exchanges.Order }
+	OrderUpdateMsg struct{ Order *EnhancedOrder }
 	StatusMsg      struct{}
+	PriceUpdateMsg struct {
+		Symbol string
+		Price  float64
+	}
 )
+
+// EnhancedOrder extends the basic Order with advanced features
+type EnhancedOrder struct {
+	*exchanges.Order
+	OriginalType  string  // Original order type before conversion
+	StopPrice     float64 // Stop trigger price
+	TrailAmount   float64 // Trailing stop amount (absolute)
+	TrailPercent  float64 // Trailing stop percentage
+	HighWaterMark float64 // For trailing stops (highest price for sell, lowest for buy)
+	TimeInForce   string  // "GTC", "IOC", "FOK"
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+	TriggerPrice  float64 // Last trigger price for stop orders
+	IsTriggered   bool    // Whether stop order has been triggered
+	ParentOrderID string  // For stop orders created from other orders
+}
 
 // OrderManagerActor manages order placement and advanced order types
 type OrderManagerActor struct {
@@ -38,18 +110,32 @@ type OrderManagerActor struct {
 	config       *config.Config
 	db           *database.DB
 	logger       zerolog.Logger
-	orders       map[string]*exchanges.Order // Active orders by ID
-	exchange     exchanges.Exchange          // Reference to exchange interface
+	orders       map[string]*EnhancedOrder // Active orders by ID
+	exchange     exchanges.Exchange        // Reference to exchange interface
+
+	// Advanced order management
+	stopOrders    map[string]*EnhancedOrder // Stop orders waiting for trigger
+	trailingStops map[string]*EnhancedOrder // Trailing stop orders
+	priceCache    map[string]float64        // Latest prices by symbol
+	mutex         sync.RWMutex              // Thread safety
+
+	// Monitoring
+	tickerTimer    *time.Ticker
+	monitoringDone chan struct{}
 }
 
 // New creates a new order manager actor
 func New(exchangeName string, cfg *config.Config, db *database.DB, logger zerolog.Logger) *OrderManagerActor {
 	return &OrderManagerActor{
-		exchangeName: exchangeName,
-		config:       cfg,
-		db:           db,
-		logger:       logger,
-		orders:       make(map[string]*exchanges.Order),
+		exchangeName:   exchangeName,
+		config:         cfg,
+		db:             db,
+		logger:         logger,
+		orders:         make(map[string]*EnhancedOrder),
+		stopOrders:     make(map[string]*EnhancedOrder),
+		trailingStops:  make(map[string]*EnhancedOrder),
+		priceCache:     make(map[string]float64),
+		monitoringDone: make(chan struct{}),
 	}
 }
 
@@ -67,20 +153,31 @@ func (o *OrderManagerActor) Receive(ctx *actor.Context) {
 		o.onStopped(ctx)
 	case PlaceOrderMsg:
 		o.onPlaceOrder(ctx, msg)
+	case PlaceTrailingStopMsg:
+		o.onPlaceTrailingStop(ctx, msg)
+	case PlaceStopOrderMsg:
+		o.onPlaceStopOrder(ctx, msg)
 	case CancelOrderMsg:
 		o.onCancelOrder(ctx, msg)
+	case ModifyOrderMsg:
+		o.onModifyOrder(ctx, msg)
 	case GetOrdersMsg:
 		o.onGetOrders(ctx, msg)
 	case OrderUpdateMsg:
 		o.onOrderUpdate(ctx, msg)
+	case PriceUpdateMsg:
+		o.onPriceUpdate(ctx, msg)
 	case StatusMsg:
 		o.onStatus(ctx)
 	case map[string]interface{}: // Handle strategy signals
 		o.onStrategySignal(ctx, msg)
 	default:
-		o.logger.Debug().
-			Str("message_type", fmt.Sprintf("%T", msg)).
-			Msg("Received message")
+		// Reduced chattiness - only log unknown message types at info level
+		if fmt.Sprintf("%T", msg) != "map[string]interface {}" {
+			o.logger.Info().
+				Str("message_type", fmt.Sprintf("%T", msg)).
+				Msg("Received unknown message type")
+		}
 	}
 }
 
@@ -88,12 +185,41 @@ func (o *OrderManagerActor) onStarted(ctx *actor.Context) {
 	o.logger.Info().
 		Str("exchange", o.exchangeName).
 		Msg("Order manager actor started")
+
+	// Start price monitoring for stop and trailing orders
+	o.startPriceMonitoring(ctx)
 }
 
 func (o *OrderManagerActor) onStopped(ctx *actor.Context) {
 	o.logger.Info().
 		Str("exchange", o.exchangeName).
 		Msg("Order manager actor stopped")
+
+	// Stop price monitoring
+	o.stopPriceMonitoring()
+}
+
+func (o *OrderManagerActor) startPriceMonitoring(ctx *actor.Context) {
+	o.tickerTimer = time.NewTicker(1 * time.Second) // Check every second
+
+	go func() {
+		for {
+			select {
+			case <-o.tickerTimer.C:
+				o.checkStopOrders(ctx)
+				o.updateTrailingStops(ctx)
+			case <-o.monitoringDone:
+				return
+			}
+		}
+	}()
+}
+
+func (o *OrderManagerActor) stopPriceMonitoring() {
+	if o.tickerTimer != nil {
+		o.tickerTimer.Stop()
+	}
+	close(o.monitoringDone)
 }
 
 func (o *OrderManagerActor) onStrategySignal(ctx *actor.Context, signal map[string]interface{}) {
@@ -106,6 +232,16 @@ func (o *OrderManagerActor) onStrategySignal(ctx *actor.Context, signal map[stri
 		}
 	}
 
+	// Check if this is a price update
+	if msgType, ok := signal["type"].(string); ok && msgType == "price_update" {
+		if symbol, ok := signal["symbol"].(string); ok {
+			if price, ok := signal["price"].(float64); ok {
+				o.onPriceUpdate(ctx, PriceUpdateMsg{Symbol: symbol, Price: price})
+				return
+			}
+		}
+	}
+
 	// Convert strategy signal to order message
 	symbol, _ := signal["symbol"].(string)
 	side, _ := signal["side"].(string)
@@ -114,6 +250,12 @@ func (o *OrderManagerActor) onStrategySignal(ctx *actor.Context, signal map[stri
 	price, _ := signal["price"].(float64)
 	reason, _ := signal["reason"].(string)
 
+	// Advanced order parameters
+	stopPrice, _ := signal["stop_price"].(float64)
+	trailAmount, _ := signal["trail_amount"].(float64)
+	trailPercent, _ := signal["trail_percent"].(float64)
+	timeInForce, _ := signal["time_in_force"].(string)
+
 	if symbol == "" || side == "" || quantity <= 0 {
 		o.logger.Warn().Interface("signal", signal).Msg("Invalid strategy signal")
 		return
@@ -121,19 +263,54 @@ func (o *OrderManagerActor) onStrategySignal(ctx *actor.Context, signal map[stri
 
 	// Default to market order if type not specified
 	if orderType == "" {
-		orderType = "market"
+		orderType = OrderTypeMarket
 	}
 
-	orderMsg := PlaceOrderMsg{
-		Symbol:   symbol,
-		Side:     side,
-		Type:     orderType,
-		Quantity: quantity,
-		Price:    price,
-		Reason:   reason,
+	// Default time in force
+	if timeInForce == "" {
+		timeInForce = "GTC"
 	}
 
-	o.onPlaceOrder(ctx, orderMsg)
+	// Handle different order types
+	switch orderType {
+	case OrderTypeTrailing:
+		trailMsg := PlaceTrailingStopMsg{
+			Symbol:       symbol,
+			Side:         side,
+			Quantity:     quantity,
+			TrailAmount:  trailAmount,
+			TrailPercent: trailPercent,
+			Reason:       reason,
+		}
+		o.onPlaceTrailingStop(ctx, trailMsg)
+
+	case OrderTypeStopMarket, OrderTypeStopLimit:
+		stopMsg := PlaceStopOrderMsg{
+			Symbol:     symbol,
+			Side:       side,
+			Quantity:   quantity,
+			StopPrice:  stopPrice,
+			LimitPrice: price,
+			Reason:     reason,
+		}
+		o.onPlaceStopOrder(ctx, stopMsg)
+
+	default:
+		// Regular market or limit order
+		orderMsg := PlaceOrderMsg{
+			Symbol:       symbol,
+			Side:         side,
+			Type:         orderType,
+			Quantity:     quantity,
+			Price:        price,
+			StopPrice:    stopPrice,
+			TrailAmount:  trailAmount,
+			TrailPercent: trailPercent,
+			TimeInForce:  timeInForce,
+			Reason:       reason,
+		}
+		o.onPlaceOrder(ctx, orderMsg)
+	}
 }
 
 func (o *OrderManagerActor) onPlaceOrder(ctx *actor.Context, msg PlaceOrderMsg) {
@@ -152,40 +329,76 @@ func (o *OrderManagerActor) onPlaceOrder(ctx *actor.Context, msg PlaceOrderMsg) 
 		return
 	}
 
-	// Create order object
-	order := &exchanges.Order{
-		Symbol:   msg.Symbol,
-		Side:     msg.Side,
-		Type:     msg.Type,
-		Quantity: msg.Quantity,
-		Price:    msg.Price,
-		Status:   "pending",
-		Time:     time.Now(),
+	// Handle advanced order types
+	switch msg.Type {
+	case OrderTypeTrailing:
+		o.onPlaceTrailingStop(ctx, PlaceTrailingStopMsg{
+			Symbol:       msg.Symbol,
+			Side:         msg.Side,
+			Quantity:     msg.Quantity,
+			TrailAmount:  msg.TrailAmount,
+			TrailPercent: msg.TrailPercent,
+			Reason:       msg.Reason,
+		})
+		return
+	case OrderTypeStopMarket, OrderTypeStopLimit:
+		o.onPlaceStopOrder(ctx, PlaceStopOrderMsg{
+			Symbol:     msg.Symbol,
+			Side:       msg.Side,
+			Quantity:   msg.Quantity,
+			StopPrice:  msg.StopPrice,
+			LimitPrice: msg.Price, // For stop-limit orders
+			Reason:     msg.Reason,
+		})
+		return
+	}
+
+	// Create enhanced order object
+	enhancedOrder := &EnhancedOrder{
+		Order: &exchanges.Order{
+			Symbol:   msg.Symbol,
+			Side:     msg.Side,
+			Type:     msg.Type,
+			Quantity: msg.Quantity,
+			Price:    msg.Price,
+			Status:   StatusPending,
+			Time:     time.Now(),
+		},
+		OriginalType: msg.Type,
+		TimeInForce:  msg.TimeInForce,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
 	}
 
 	// Place order through exchange
 	orderCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	placedOrder, err := o.exchange.PlaceOrder(orderCtx, order)
+	placedOrder, err := o.exchange.PlaceOrder(orderCtx, enhancedOrder.Order)
 	if err != nil {
 		o.logger.Error().Err(err).Msg("Failed to place order")
 		ctx.Respond(err)
 		return
 	}
 
+	// Update enhanced order with exchange response
+	enhancedOrder.Order = placedOrder
+	enhancedOrder.UpdatedAt = time.Now()
+
 	// Store order
-	o.orders[placedOrder.ID] = placedOrder
+	o.mutex.Lock()
+	o.orders[placedOrder.ID] = enhancedOrder
+	o.mutex.Unlock()
 
 	// Persist order to database
-	o.persistOrder(placedOrder)
+	o.persistEnhancedOrder(enhancedOrder)
 
 	o.logger.Info().
 		Str("order_id", placedOrder.ID).
 		Str("status", placedOrder.Status).
 		Msg("Order placed successfully")
 
-	ctx.Respond(placedOrder)
+	ctx.Respond(enhancedOrder)
 }
 
 func (o *OrderManagerActor) onCancelOrder(ctx *actor.Context, msg CancelOrderMsg) {
@@ -200,43 +413,83 @@ func (o *OrderManagerActor) onCancelOrder(ctx *actor.Context, msg CancelOrderMsg
 		return
 	}
 
-	// Cancel order through exchange
-	cancelCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
 
-	err := o.exchange.CancelOrder(cancelCtx, msg.Symbol, msg.OrderID)
-	if err != nil {
-		o.logger.Error().Err(err).Msg("Failed to cancel order")
-		ctx.Respond(err)
+	// Check if it's a regular order
+	if order, exists := o.orders[msg.OrderID]; exists {
+		// Cancel order through exchange for regular orders
+		if order.OriginalType == OrderTypeMarket || order.OriginalType == OrderTypeLimit {
+			cancelCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			err := o.exchange.CancelOrder(cancelCtx, msg.Symbol, msg.OrderID)
+			if err != nil {
+				o.logger.Error().Err(err).Msg("Failed to cancel order")
+				ctx.Respond(err)
+				return
+			}
+		}
+
+		// Update local order status
+		order.Status = StatusCancelled
+		order.UpdatedAt = time.Now()
+		o.persistEnhancedOrder(order)
+
+		o.logger.Info().Str("order_id", msg.OrderID).Msg("Order cancelled successfully")
+		ctx.Respond("cancelled")
 		return
 	}
 
-	// Update local order status
-	if order, exists := o.orders[msg.OrderID]; exists {
-		order.Status = "cancelled"
-		o.persistOrder(order)
+	// Check if it's a stop order
+	if stopOrder, exists := o.stopOrders[msg.OrderID]; exists {
+		stopOrder.Status = StatusCancelled
+		stopOrder.UpdatedAt = time.Now()
+		delete(o.stopOrders, msg.OrderID)
+		o.persistEnhancedOrder(stopOrder)
+
+		o.logger.Info().Str("order_id", msg.OrderID).Msg("Stop order cancelled successfully")
+		ctx.Respond("cancelled")
+		return
 	}
 
-	o.logger.Info().Str("order_id", msg.OrderID).Msg("Order cancelled successfully")
-	ctx.Respond("cancelled")
+	// Check if it's a trailing stop order
+	if trailOrder, exists := o.trailingStops[msg.OrderID]; exists {
+		trailOrder.Status = StatusCancelled
+		trailOrder.UpdatedAt = time.Now()
+		delete(o.trailingStops, msg.OrderID)
+		o.persistEnhancedOrder(trailOrder)
+
+		o.logger.Info().Str("order_id", msg.OrderID).Msg("Trailing stop order cancelled successfully")
+		ctx.Respond("cancelled")
+		return
+	}
+
+	// Order not found
+	ctx.Respond(fmt.Errorf("order not found: %s", msg.OrderID))
 }
 
 func (o *OrderManagerActor) onGetOrders(ctx *actor.Context, msg GetOrdersMsg) {
-	orders := make([]*exchanges.Order, 0)
+	orders := make([]*EnhancedOrder, 0)
 
+	o.mutex.RLock()
 	for _, order := range o.orders {
 		if msg.Symbol == "" || order.Symbol == msg.Symbol {
 			orders = append(orders, order)
 		}
 	}
+	o.mutex.RUnlock()
 
 	ctx.Respond(orders)
 }
 
 func (o *OrderManagerActor) onOrderUpdate(ctx *actor.Context, msg OrderUpdateMsg) {
 	// Update order status from exchange
+	o.mutex.Lock()
 	o.orders[msg.Order.ID] = msg.Order
-	o.persistOrder(msg.Order)
+	o.mutex.Unlock()
+
+	o.persistEnhancedOrder(msg.Order)
 
 	o.logger.Info().
 		Str("order_id", msg.Order.ID).
@@ -244,19 +497,40 @@ func (o *OrderManagerActor) onOrderUpdate(ctx *actor.Context, msg OrderUpdateMsg
 		Msg("Order status updated")
 }
 
+func (o *OrderManagerActor) persistEnhancedOrder(order *EnhancedOrder) {
+	// TODO: Implement database persistence for enhanced orders
+	// Reduced chattiness - only log on errors or important state changes
+	if order.Status == StatusFilled || order.Status == StatusCancelled {
+		o.logger.Info().
+			Str("order_id", order.ID).
+			Str("status", order.Status).
+			Str("type", order.OriginalType).
+			Msg("Order status updated")
+	}
+}
+
 func (o *OrderManagerActor) onStatus(ctx *actor.Context) {
+	o.mutex.RLock()
+	defer o.mutex.RUnlock()
+
 	activeOrders := 0
 	for _, order := range o.orders {
-		if order.Status == "pending" || order.Status == "open" || order.Status == "partially_filled" {
+		if order.Status == StatusPending || order.Status == StatusOpen || order.Status == StatusPartiallyFilled {
 			activeOrders++
 		}
 	}
 
+	pendingStopOrders := len(o.stopOrders)
+	pendingTrailingStops := len(o.trailingStops)
+
 	status := map[string]interface{}{
-		"exchange":      o.exchangeName,
-		"total_orders":  len(o.orders),
-		"active_orders": activeOrders,
-		"timestamp":     time.Now(),
+		"exchange":               o.exchangeName,
+		"total_orders":           len(o.orders),
+		"active_orders":          activeOrders,
+		"pending_stop_orders":    pendingStopOrders,
+		"pending_trailing_stops": pendingTrailingStops,
+		"symbols_tracked":        len(o.priceCache),
+		"timestamp":              time.Now(),
 	}
 
 	ctx.Respond(status)
@@ -264,8 +538,328 @@ func (o *OrderManagerActor) onStatus(ctx *actor.Context) {
 
 func (o *OrderManagerActor) persistOrder(order *exchanges.Order) {
 	// TODO: Implement database persistence
-	o.logger.Debug().
-		Str("order_id", order.ID).
-		Str("status", order.Status).
-		Msg("Order persisted to database")
+	// Reduced chattiness - only log important status changes
+	if order.Status == "filled" || order.Status == "cancelled" {
+		o.logger.Info().
+			Str("order_id", order.ID).
+			Str("status", order.Status).
+			Msg("Order status persisted")
+	}
+}
+
+// Advanced order management methods
+
+func (o *OrderManagerActor) onPlaceTrailingStop(ctx *actor.Context, msg PlaceTrailingStopMsg) {
+	o.logger.Info().
+		Str("symbol", msg.Symbol).
+		Str("side", msg.Side).
+		Float64("quantity", msg.Quantity).
+		Float64("trail_amount", msg.TrailAmount).
+		Float64("trail_percent", msg.TrailPercent).
+		Msg("Placing trailing stop order")
+
+	// Get current market price
+	currentPrice, exists := o.priceCache[msg.Symbol]
+	if !exists {
+		o.logger.Error().Str("symbol", msg.Symbol).Msg("No current price available for trailing stop")
+		ctx.Respond(fmt.Errorf("no current price available for %s", msg.Symbol))
+		return
+	}
+
+	// Create trailing stop order
+	enhancedOrder := &EnhancedOrder{
+		Order: &exchanges.Order{
+			Symbol:   msg.Symbol,
+			Side:     msg.Side,
+			Type:     OrderTypeTrailing,
+			Quantity: msg.Quantity,
+			Status:   StatusPending,
+			Time:     time.Now(),
+		},
+		OriginalType:  OrderTypeTrailing,
+		TrailAmount:   msg.TrailAmount,
+		TrailPercent:  msg.TrailPercent,
+		HighWaterMark: currentPrice,
+		CreatedAt:     time.Now(),
+		UpdatedAt:     time.Now(),
+	}
+
+	// Generate unique order ID
+	enhancedOrder.ID = fmt.Sprintf("trail_%d", time.Now().UnixNano())
+
+	// Store in trailing stops
+	o.mutex.Lock()
+	o.trailingStops[enhancedOrder.ID] = enhancedOrder
+	o.mutex.Unlock()
+
+	o.logger.Info().
+		Str("order_id", enhancedOrder.ID).
+		Float64("initial_price", currentPrice).
+		Msg("Trailing stop order created")
+
+	ctx.Respond(enhancedOrder)
+}
+
+func (o *OrderManagerActor) onPlaceStopOrder(ctx *actor.Context, msg PlaceStopOrderMsg) {
+	o.logger.Info().
+		Str("symbol", msg.Symbol).
+		Str("side", msg.Side).
+		Float64("quantity", msg.Quantity).
+		Float64("stop_price", msg.StopPrice).
+		Float64("limit_price", msg.LimitPrice).
+		Msg("Placing stop order")
+
+	orderType := OrderTypeStopMarket
+	if msg.LimitPrice > 0 {
+		orderType = OrderTypeStopLimit
+	}
+
+	// Create stop order
+	enhancedOrder := &EnhancedOrder{
+		Order: &exchanges.Order{
+			Symbol:   msg.Symbol,
+			Side:     msg.Side,
+			Type:     orderType,
+			Quantity: msg.Quantity,
+			Price:    msg.LimitPrice,
+			Status:   StatusPending,
+			Time:     time.Now(),
+		},
+		OriginalType: orderType,
+		StopPrice:    msg.StopPrice,
+		CreatedAt:    time.Now(),
+		UpdatedAt:    time.Now(),
+	}
+
+	// Generate unique order ID
+	enhancedOrder.ID = fmt.Sprintf("stop_%d", time.Now().UnixNano())
+
+	// Store in stop orders
+	o.mutex.Lock()
+	o.stopOrders[enhancedOrder.ID] = enhancedOrder
+	o.mutex.Unlock()
+
+	o.logger.Info().
+		Str("order_id", enhancedOrder.ID).
+		Float64("stop_price", msg.StopPrice).
+		Msg("Stop order created")
+
+	ctx.Respond(enhancedOrder)
+}
+
+func (o *OrderManagerActor) onModifyOrder(ctx *actor.Context, msg ModifyOrderMsg) {
+	o.logger.Info().
+		Str("order_id", msg.OrderID).
+		Str("symbol", msg.Symbol).
+		Msg("Modifying order")
+
+	o.mutex.Lock()
+	order, exists := o.orders[msg.OrderID]
+	if !exists {
+		o.mutex.Unlock()
+		ctx.Respond(fmt.Errorf("order not found: %s", msg.OrderID))
+		return
+	}
+
+	// Update order fields
+	if msg.NewQuantity != nil {
+		order.Quantity = *msg.NewQuantity
+	}
+	if msg.NewPrice != nil {
+		order.Price = *msg.NewPrice
+	}
+	if msg.NewStopPrice != nil {
+		order.StopPrice = *msg.NewStopPrice
+	}
+
+	order.UpdatedAt = time.Now()
+	o.mutex.Unlock()
+
+	// If this is a regular exchange order, modify it on the exchange
+	if order.OriginalType == OrderTypeMarket || order.OriginalType == OrderTypeLimit {
+		// TODO: Implement exchange order modification
+		o.logger.Info().Str("order_id", msg.OrderID).Msg("Exchange order modification not yet implemented")
+	}
+
+	o.persistEnhancedOrder(order)
+	ctx.Respond(order)
+}
+
+func (o *OrderManagerActor) onPriceUpdate(ctx *actor.Context, msg PriceUpdateMsg) {
+	o.mutex.Lock()
+	o.priceCache[msg.Symbol] = msg.Price
+	o.mutex.Unlock()
+}
+
+func (o *OrderManagerActor) checkStopOrders(ctx *actor.Context) {
+	o.mutex.RLock()
+	defer o.mutex.RUnlock()
+
+	for orderID, stopOrder := range o.stopOrders {
+		if stopOrder.IsTriggered {
+			continue
+		}
+
+		currentPrice, exists := o.priceCache[stopOrder.Symbol]
+		if !exists {
+			continue
+		}
+
+		shouldTrigger := false
+
+		// Check trigger conditions
+		if stopOrder.Side == "buy" {
+			// Buy stop: trigger when price rises above stop price
+			shouldTrigger = currentPrice >= stopOrder.StopPrice
+		} else {
+			// Sell stop: trigger when price falls below stop price
+			shouldTrigger = currentPrice <= stopOrder.StopPrice
+		}
+
+		if shouldTrigger {
+			o.triggerStopOrder(ctx, orderID, stopOrder, currentPrice)
+		}
+	}
+}
+
+func (o *OrderManagerActor) updateTrailingStops(ctx *actor.Context) {
+	o.mutex.Lock()
+	defer o.mutex.Unlock()
+
+	for orderID, trailOrder := range o.trailingStops {
+		currentPrice, exists := o.priceCache[trailOrder.Symbol]
+		if !exists {
+			continue
+		}
+
+		// Update high water mark
+		if trailOrder.Side == "sell" {
+			// For sell trailing stop, track highest price
+			if currentPrice > trailOrder.HighWaterMark {
+				trailOrder.HighWaterMark = currentPrice
+				trailOrder.UpdatedAt = time.Now()
+			}
+
+			// Calculate trigger price
+			var triggerPrice float64
+			if trailOrder.TrailPercent > 0 {
+				triggerPrice = trailOrder.HighWaterMark * (1 - trailOrder.TrailPercent/100)
+			} else {
+				triggerPrice = trailOrder.HighWaterMark - trailOrder.TrailAmount
+			}
+
+			// Check if we should trigger
+			if currentPrice <= triggerPrice {
+				o.triggerTrailingStop(ctx, orderID, trailOrder, currentPrice)
+			}
+		} else {
+			// For buy trailing stop, track lowest price
+			if currentPrice < trailOrder.HighWaterMark {
+				trailOrder.HighWaterMark = currentPrice
+				trailOrder.UpdatedAt = time.Now()
+			}
+
+			// Calculate trigger price
+			var triggerPrice float64
+			if trailOrder.TrailPercent > 0 {
+				triggerPrice = trailOrder.HighWaterMark * (1 + trailOrder.TrailPercent/100)
+			} else {
+				triggerPrice = trailOrder.HighWaterMark + trailOrder.TrailAmount
+			}
+
+			// Check if we should trigger
+			if currentPrice >= triggerPrice {
+				o.triggerTrailingStop(ctx, orderID, trailOrder, currentPrice)
+			}
+		}
+	}
+}
+
+func (o *OrderManagerActor) triggerStopOrder(ctx *actor.Context, orderID string, stopOrder *EnhancedOrder, currentPrice float64) {
+	o.logger.Info().
+		Str("order_id", orderID).
+		Float64("trigger_price", currentPrice).
+		Float64("stop_price", stopOrder.StopPrice).
+		Msg("Triggering stop order")
+
+	stopOrder.IsTriggered = true
+	stopOrder.TriggerPrice = currentPrice
+	stopOrder.UpdatedAt = time.Now()
+
+	// Create market order to execute the stop
+	marketOrder := &exchanges.Order{
+		Symbol:   stopOrder.Symbol,
+		Side:     stopOrder.Side,
+		Type:     OrderTypeMarket,
+		Quantity: stopOrder.Quantity,
+		Status:   StatusPending,
+		Time:     time.Now(),
+	}
+
+	if stopOrder.OriginalType == OrderTypeStopLimit && stopOrder.Price > 0 {
+		marketOrder.Type = OrderTypeLimit
+		marketOrder.Price = stopOrder.Price
+	}
+
+	// Place the market order
+	orderCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	placedOrder, err := o.exchange.PlaceOrder(orderCtx, marketOrder)
+	if err != nil {
+		o.logger.Error().Err(err).Str("order_id", orderID).Msg("Failed to execute stop order")
+		return
+	}
+
+	// Update stop order status
+	stopOrder.Status = StatusFilled
+	stopOrder.Order.ID = placedOrder.ID
+
+	// Move from stopOrders to orders
+	delete(o.stopOrders, orderID)
+	o.orders[placedOrder.ID] = stopOrder
+
+	o.persistEnhancedOrder(stopOrder)
+}
+
+func (o *OrderManagerActor) triggerTrailingStop(ctx *actor.Context, orderID string, trailOrder *EnhancedOrder, currentPrice float64) {
+	o.logger.Info().
+		Str("order_id", orderID).
+		Float64("trigger_price", currentPrice).
+		Float64("high_water_mark", trailOrder.HighWaterMark).
+		Msg("Triggering trailing stop order")
+
+	trailOrder.IsTriggered = true
+	trailOrder.TriggerPrice = currentPrice
+	trailOrder.UpdatedAt = time.Now()
+
+	// Create market order to execute the trailing stop
+	marketOrder := &exchanges.Order{
+		Symbol:   trailOrder.Symbol,
+		Side:     trailOrder.Side,
+		Type:     OrderTypeMarket,
+		Quantity: trailOrder.Quantity,
+		Status:   StatusPending,
+		Time:     time.Now(),
+	}
+
+	// Place the market order
+	orderCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	placedOrder, err := o.exchange.PlaceOrder(orderCtx, marketOrder)
+	if err != nil {
+		o.logger.Error().Err(err).Str("order_id", orderID).Msg("Failed to execute trailing stop order")
+		return
+	}
+
+	// Update trailing stop order status
+	trailOrder.Status = StatusFilled
+	trailOrder.Order.ID = placedOrder.ID
+
+	// Move from trailingStops to orders
+	delete(o.trailingStops, orderID)
+	o.orders[placedOrder.ID] = trailOrder
+
+	o.persistEnhancedOrder(trailOrder)
 }

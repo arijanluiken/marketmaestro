@@ -100,6 +100,8 @@ func (s *Supervisor) Receive(ctx *actor.Context) {
 		s.onError(ctx, msg)
 	case RegisterExchange:
 		s.onRegisterExchange(ctx, msg)
+	case exchange.PortfolioActorCreatedMsg:
+		s.onPortfolioActorCreated(ctx, msg)
 	default:
 		s.logger.Warn().
 			Str("message_type", fmt.Sprintf("%T", msg)).
@@ -214,4 +216,18 @@ func (s *Supervisor) startExchangeActor(ctx *actor.Context, exchangeName string,
 
 	s.exchangeActors[exchangeName] = exchangeActorPID
 	s.logger.Info().Str("exchange", exchangeName).Msg("Exchange actor started successfully")
+}
+
+func (s *Supervisor) onPortfolioActorCreated(ctx *actor.Context, msg exchange.PortfolioActorCreatedMsg) {
+	s.logger.Info().
+		Str("exchange", msg.Exchange).
+		Msg("Portfolio actor created, notifying API actor")
+
+	// Notify API actor about the new portfolio actor
+	if s.apiActor != nil {
+		ctx.Send(s.apiActor, api.SetPortfolioActorMsg{
+			Exchange:     msg.Exchange,
+			PortfolioPID: msg.PortfolioPID,
+		})
+	}
 }

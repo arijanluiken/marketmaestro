@@ -1,5 +1,8 @@
 # RSI Strategy
 
+# Strategy configuration
+interval = "15m"  # Kline interval for this strategy
+
 # Get configuration parameters
 period = config.get("period", 14)
 oversold = config.get("oversold", 30)
@@ -24,12 +27,12 @@ if len(close) >= period:
     if current_rsi < oversold:
         action = "buy"
         quantity = position_size
-        reason = f"RSI oversold at {current_rsi:.2f} (< {oversold})"
-        log(f"BUY signal: {reason}")
+        reason = "RSI oversold at " + str(current_rsi) + " (< " + str(oversold) + ")"
+        log("BUY signal: " + reason)
     elif current_rsi > overbought:
         action = "sell"
         quantity = position_size
-        reason = f"RSI overbought at {current_rsi:.2f} (> {overbought})"
-        log(f"SELL signal: {reason}")
+        reason = "RSI overbought at " + str(current_rsi) + " (> " + str(overbought) + ")"
+        log("SELL signal: " + reason)
 
 # Return the signal

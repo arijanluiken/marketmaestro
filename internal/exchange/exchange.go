@@ -31,6 +31,12 @@ type (
 	GetPositionsMsg       struct{}
 	StatusMsg             struct{}
 
+	// Notification messages
+	PortfolioActorCreatedMsg struct {
+		Exchange     string
+		PortfolioPID *actor.PID
+	}
+
 	// Data messages
 	KlineDataMsg      struct{ Kline *exchanges.Kline }
 	OrderBookDataMsg  struct{ OrderBook *exchanges.OrderBook }
@@ -141,6 +147,9 @@ func (e *ExchangeActor) startConfiguredStrategies(ctx *actor.Context) {
 		return
 	}
 
+	// Create strategy engine to extract intervals from scripts
+	strategyEngine := strategy.NewStrategyEngine(e.logger)
+
 	// Start strategies for each configured pair
 	for _, pairConfig := range exchangeConfig.Pairs {
 		symbols := []string{pairConfig.Symbol}
@@ -148,11 +157,14 @@ func (e *ExchangeActor) startConfiguredStrategies(ctx *actor.Context) {
 		// Collect unique intervals from all strategies for this symbol
 		intervals := make(map[string]bool)
 		for _, strategyConfig := range pairConfig.Strategies {
-			interval := e.config.Strategies.DefaultInterval
-			if strategyInterval, exists := strategyConfig.Config["interval"]; exists {
-				if intervalStr, ok := strategyInterval.(string); ok {
-					interval = intervalStr
-				}
+			// Get interval from strategy script
+			interval, err := strategyEngine.GetStrategyInterval(strategyConfig.Name)
+			if err != nil {
+				e.logger.Error().
+					Err(err).
+					Str("strategy", strategyConfig.Name).
+					Msg("Failed to get strategy interval, using default")
+				interval = "1m" // Default fallback
 			}
 			intervals[interval] = true
 		}
@@ -214,6 +226,14 @@ func (e *ExchangeActor) startChildActors(ctx *actor.Context) {
 
 	// Send exchange actor reference to portfolio actor
 	ctx.Send(portfolioPID, portfolio.SetExchangeActorMsg{ExchangeActorPID: ctx.PID()})
+
+	// Notify supervisor about portfolio actor creation
+	if ctx.Parent() != nil {
+		ctx.Send(ctx.Parent(), PortfolioActorCreatedMsg{
+			Exchange:     e.exchangeName,
+			PortfolioPID: portfolioPID,
+		})
+	}
 
 	// Start Settings Actor
 	settingsPID := ctx.SpawnChild(func() actor.Receiver {
@@ -339,7 +359,8 @@ func (e *ExchangeActor) onSubscribeOrderBook(ctx *actor.Context, msg SubscribeOr
 
 // DataHandler interface implementation
 func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
-	e.logger.Debug().
+	// Info level only for important price updates
+	e.logger.Info().
 		Str("symbol", kline.Symbol).
 		Str("interval", kline.Interval).
 		Float64("close", kline.Close).
@@ -363,15 +384,27 @@ func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
 		}
 		e.actorSystem.Send(e.portfolioPID, priceUpdate)
 	}
+
+	// Send price update to order manager for stop/trailing orders
+	if e.orderManagerPID != nil && e.actorSystem != nil {
+		priceUpdate := map[string]interface{}{
+			"type":   "price_update",
+			"symbol": kline.Symbol,
+			"price":  kline.Close,
+		}
+		e.actorSystem.Send(e.orderManagerPID, priceUpdate)
+	}
 }
 
 func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
-	e.logger.Debug().
-		Str("symbol", orderBook.Symbol).
-		Int("bids", len(orderBook.Bids)).
-		Int("asks", len(orderBook.Asks)).
-		Time("timestamp", orderBook.Timestamp).
-		Msg("Received order book data")
+	// Reduced logging to only error cases
+	if len(orderBook.Bids) == 0 || len(orderBook.Asks) == 0 {
+		e.logger.Warn().
+			Str("symbol", orderBook.Symbol).
+			Int("bids", len(orderBook.Bids)).
+			Int("asks", len(orderBook.Asks)).
+			Msg("Empty order book received")
+	}
 
 	// Broadcast to strategy actors using the actor system
 	msg := OrderBookDataMsg{OrderBook: orderBook}
@@ -380,17 +413,40 @@ func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
 			e.actorSystem.Send(strategyPID, msg)
 		}
 	}
+
+	// Send price update to order manager for stop/trailing orders
+	if e.orderManagerPID != nil && e.actorSystem != nil && len(orderBook.Bids) > 0 && len(orderBook.Asks) > 0 {
+		// Use mid price for order management
+		midPrice := (orderBook.Bids[0].Price + orderBook.Asks[0].Price) / 2
+		priceUpdate := map[string]interface{}{
+			"type":   "price_update",
+			"symbol": orderBook.Symbol,
+			"price":  midPrice,
+		}
+		e.actorSystem.Send(e.orderManagerPID, priceUpdate)
+	}
 }
 
 func (e *ExchangeActor) OnTicker(ticker *exchanges.Ticker) {
-	e.logger.Debug().
-		Str("symbol", ticker.Symbol).
-		Float64("price", ticker.Price).
-		Float64("volume", ticker.Volume).
-		Time("timestamp", ticker.Timestamp).
-		Msg("Received ticker data")
+	// Only log significant price changes or errors
 
-	// Could be used for real-time price updates
+	// Broadcast to strategy actors using the actor system
+	msg := strategy.TickerDataMsg{Ticker: ticker}
+	for _, strategyPID := range e.strategyActors {
+		if strategyPID != nil && e.actorSystem != nil {
+			e.actorSystem.Send(strategyPID, msg)
+		}
+	}
+
+	// Send price update to order manager for stop/trailing orders
+	if e.orderManagerPID != nil && e.actorSystem != nil {
+		priceUpdate := map[string]interface{}{
+			"type":   "price_update",
+			"symbol": ticker.Symbol,
+			"price":  ticker.Price,
+		}
+		e.actorSystem.Send(e.orderManagerPID, priceUpdate)
+	}
 }
 
 func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
@@ -565,7 +621,7 @@ func (e *ExchangeActor) onPortfolioRequestBalances(ctx *actor.Context) {
 		return
 	}
 
-	e.logger.Debug().Msg("Portfolio requested balances")
+	// Removed debug logging for portfolio requests
 
 	balanceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -586,9 +642,10 @@ func (e *ExchangeActor) onPortfolioRequestBalances(ctx *actor.Context) {
 			}
 			ctx.Send(e.portfolioPID, portfolioMsg)
 		}
-		e.logger.Debug().
-			Int("balance_count", len(balances)).
-			Msg("Sent balance updates to portfolio")
+		// Reduced logging - only log on errors
+		if len(balances) == 0 {
+			e.logger.Warn().Msg("No balances received from exchange")
+		}
 	}
 }
 
@@ -598,7 +655,7 @@ func (e *ExchangeActor) onPortfolioRequestPositions(ctx *actor.Context) {
 		return
 	}
 
-	e.logger.Debug().Msg("Portfolio requested positions")
+	// Removed debug logging for position requests
 
 	positionCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -621,8 +678,9 @@ func (e *ExchangeActor) onPortfolioRequestPositions(ctx *actor.Context) {
 			}
 			ctx.Send(e.portfolioPID, portfolioMsg)
 		}
-		e.logger.Debug().
-			Int("position_count", len(positions)).
-			Msg("Sent position updates to portfolio")
+		// Only log if no positions received (potential issue)
+		if len(positions) == 0 {
+			e.logger.Info().Msg("No active positions found")
+		}
 	}
 }

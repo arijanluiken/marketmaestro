@@ -1,5 +1,8 @@
 # Simple Moving Average Crossover Strategy
 
+# Strategy configuration
+interval = "1m"  # Kline interval for this strategy
+
 # Get configuration parameters
 short_period = config.get("short_period", 10)
 long_period = config.get("long_period", 20)
@@ -29,15 +32,15 @@ if len(close) >= long_period:
     if crossover_signals and crossover_signals[-1]:
         action = "buy"
         quantity = position_size
-        reason = f"Short MA ({current_short:.2f}) crossed above Long MA ({current_long:.2f})"
-        log(f"BUY signal: {reason}")
+        reason = "Short MA (" + str(current_short) + ") crossed above Long MA (" + str(current_long) + ")"
+        log("BUY signal: " + reason)
     
     # Check if short MA crosses below long MA (sell signal)
     elif crossunder_signals and crossunder_signals[-1]:
         action = "sell"
         quantity = position_size
-        reason = f"Short MA ({current_short:.2f}) crossed below Long MA ({current_long:.2f})"
-        log(f"SELL signal: {reason}")
+        reason = "Short MA (" + str(current_short) + ") crossed below Long MA (" + str(current_long) + ")"
+        log("SELL signal: " + reason)
 
 # Return the signal
 # These variables will be read by the strategy engine

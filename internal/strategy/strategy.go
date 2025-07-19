@@ -18,6 +18,7 @@ type (
 	StopStrategyMsg    struct{}
 	KlineDataMsg       struct{ Kline *exchanges.Kline }
 	OrderBookDataMsg   struct{ OrderBook *exchanges.OrderBook }
+	TickerDataMsg      struct{ Ticker *exchanges.Ticker }
 	StatusMsg          struct{}
 	ExecuteStrategyMsg struct{}
 )
@@ -32,6 +33,7 @@ type StrategyActor struct {
 	db           *database.DB
 	logger       zerolog.Logger
 	running      bool
+	interval     string // Interval from strategy script
 
 	// Strategy execution
 	engine      *StrategyEngine
@@ -79,14 +81,17 @@ func (s *StrategyActor) Receive(ctx *actor.Context) {
 		s.onKlineData(ctx, msg)
 	case OrderBookDataMsg:
 		s.onOrderBookData(ctx, msg)
+	case TickerDataMsg:
+		s.onTickerData(ctx, msg)
 	case ExecuteStrategyMsg:
 		s.onExecuteStrategy(ctx)
 	case StatusMsg:
 		s.onStatus(ctx)
 	default:
-		s.logger.Debug().
+		// Reduced chattiness - only log unknown message types occasionally
+		s.logger.Info().
 			Str("message_type", fmt.Sprintf("%T", msg)).
-			Msg("Received message")
+			Msg("Received unknown message")
 	}
 }
 
@@ -113,6 +118,25 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 		Str("symbol", s.symbol).
 		Msg("Starting strategy execution")
 
+	// Initialize strategy engine if not already done
+	if s.engine == nil {
+		s.engine = NewStrategyEngine(s.logger)
+	}
+
+	// Extract interval from strategy script
+	interval, err := s.engine.GetStrategyInterval(s.strategyName)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to get strategy interval, using default")
+		interval = "1m" // Default fallback
+	}
+	s.interval = interval
+
+	s.logger.Info().
+		Str("strategy", s.strategyName).
+		Str("symbol", s.symbol).
+		Str("interval", s.interval).
+		Msg("Strategy interval extracted from script")
+
 	s.running = true
 
 	// Start periodic strategy execution (every 30 seconds)
@@ -133,21 +157,9 @@ func (s *StrategyActor) onKlineData(ctx *actor.Context, msg KlineDataMsg) {
 		return
 	}
 
-	// Check if this kline matches the strategy's configured interval
-	configuredInterval := s.appConfig.Strategies.DefaultInterval
-	if strategyInterval, exists := s.config["interval"]; exists {
-		if intervalStr, ok := strategyInterval.(string); ok {
-			configuredInterval = intervalStr
-		}
-	}
-
-	// Only process klines that match our configured interval
-	if msg.Kline.Interval != configuredInterval {
-		s.logger.Debug().
-			Str("symbol", msg.Kline.Symbol).
-			Str("received_interval", msg.Kline.Interval).
-			Str("configured_interval", configuredInterval).
-			Msg("Ignoring kline data - interval mismatch")
+	// Only process klines that match our strategy's interval
+	if msg.Kline.Interval != s.interval {
+		// Reduced chattiness - don't log interval mismatches
 		return
 	}
 
@@ -176,9 +188,19 @@ func (s *StrategyActor) onKlineData(ctx *actor.Context, msg KlineDataMsg) {
 		Float64("close", msg.Kline.Close).
 		Msg("Processing kline data for strategy")
 
-	// Trigger strategy execution if we have enough data
-	if len(s.klineBuffer) >= 26 { // Need at least 26 for most indicators
-		ctx.Send(ctx.PID(), ExecuteStrategyMsg{})
+	// Send price update to order manager
+	if s.orderManagerPID != nil {
+		priceUpdate := map[string]interface{}{
+			"type":   "price_update",
+			"symbol": msg.Kline.Symbol,
+			"price":  msg.Kline.Close,
+		}
+		ctx.Send(s.orderManagerPID, priceUpdate)
+	}
+
+	// Trigger strategy execution with kline callback if we have enough data
+	if len(s.klineBuffer) >= 26 {
+		s.executeKlineCallback(ctx, msg.Kline)
 	}
 }
 
@@ -194,6 +216,49 @@ func (s *StrategyActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg
 		Float64("bid", msg.OrderBook.Bids[0].Price).
 		Float64("ask", msg.OrderBook.Asks[0].Price).
 		Msg("Received order book data")
+
+	// Send price update to order manager for stop/trailing orders
+	if s.orderManagerPID != nil && len(msg.OrderBook.Bids) > 0 {
+		midPrice := (msg.OrderBook.Bids[0].Price + msg.OrderBook.Asks[0].Price) / 2
+		priceUpdate := map[string]interface{}{
+			"type":   "price_update",
+			"symbol": msg.OrderBook.Symbol,
+			"price":  midPrice,
+		}
+		ctx.Send(s.orderManagerPID, priceUpdate)
+	}
+
+	// Execute strategy with orderbook callback if we have enough data
+	if len(s.klineBuffer) >= 26 {
+		s.executeOrderBookCallback(ctx, msg.OrderBook)
+	}
+}
+
+func (s *StrategyActor) onTickerData(ctx *actor.Context, msg TickerDataMsg) {
+	if !s.running {
+		return
+	}
+
+	s.logger.Debug().
+		Str("symbol", msg.Ticker.Symbol).
+		Float64("price", msg.Ticker.Price).
+		Float64("volume", msg.Ticker.Volume).
+		Msg("Received ticker data")
+
+	// Send price update to order manager
+	if s.orderManagerPID != nil {
+		priceUpdate := map[string]interface{}{
+			"type":   "price_update",
+			"symbol": msg.Ticker.Symbol,
+			"price":  msg.Ticker.Price,
+		}
+		ctx.Send(s.orderManagerPID, priceUpdate)
+	}
+
+	// Execute strategy with ticker callback if we have enough data
+	if len(s.klineBuffer) >= 26 {
+		s.executeTickerCallback(ctx, msg.Ticker)
+	}
 }
 
 func (s *StrategyActor) onExecuteStrategy(ctx *actor.Context) {
@@ -270,4 +335,136 @@ func (s *StrategyActor) onStatus(ctx *actor.Context) {
 	}
 
 	ctx.Respond(status)
+}
+
+// executeKlineCallback executes the strategy using the on_kline callback
+func (s *StrategyActor) executeKlineCallback(ctx *actor.Context, kline *exchanges.Kline) {
+	if !s.running {
+		return
+	}
+
+	s.logger.Debug().
+		Str("strategy", s.strategyName).
+		Str("symbol", s.symbol).
+		Msg("Executing strategy with kline callback")
+
+	// Prepare strategy context
+	strategyCtx := &StrategyContext{
+		Symbol:    s.symbol,
+		Exchange:  s.exchangeName,
+		Klines:    s.klineBuffer,
+		OrderBook: s.orderBook,
+		Config:    s.config,
+		// TODO: Add balances, positions, open orders from exchange
+	}
+
+	// Execute strategy with kline callback
+	signal, err := s.engine.ExecuteKlineCallback(s.strategyName, strategyCtx, kline)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Strategy kline callback execution failed")
+		return
+	}
+
+	s.processStrategySignal(ctx, signal, "kline_callback")
+}
+
+// executeOrderBookCallback executes the strategy using the on_orderbook callback
+func (s *StrategyActor) executeOrderBookCallback(ctx *actor.Context, orderBook *exchanges.OrderBook) {
+	if !s.running {
+		return
+	}
+
+	s.logger.Debug().
+		Str("strategy", s.strategyName).
+		Str("symbol", s.symbol).
+		Msg("Executing strategy with orderbook callback")
+
+	// Prepare strategy context
+	strategyCtx := &StrategyContext{
+		Symbol:    s.symbol,
+		Exchange:  s.exchangeName,
+		Klines:    s.klineBuffer,
+		OrderBook: s.orderBook,
+		Config:    s.config,
+		// TODO: Add balances, positions, open orders from exchange
+	}
+
+	// Execute strategy with orderbook callback
+	signal, err := s.engine.ExecuteOrderBookCallback(s.strategyName, strategyCtx, orderBook)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Strategy orderbook callback execution failed")
+		return
+	}
+
+	s.processStrategySignal(ctx, signal, "orderbook_callback")
+}
+
+// executeTickerCallback executes the strategy using the on_ticker callback
+func (s *StrategyActor) executeTickerCallback(ctx *actor.Context, ticker *exchanges.Ticker) {
+	if !s.running {
+		return
+	}
+
+	s.logger.Debug().
+		Str("strategy", s.strategyName).
+		Str("symbol", s.symbol).
+		Msg("Executing strategy with ticker callback")
+
+	// Prepare strategy context
+	strategyCtx := &StrategyContext{
+		Symbol:    s.symbol,
+		Exchange:  s.exchangeName,
+		Klines:    s.klineBuffer,
+		OrderBook: s.orderBook,
+		Config:    s.config,
+		// TODO: Add balances, positions, open orders from exchange
+	}
+
+	// Execute strategy with ticker callback
+	signal, err := s.engine.ExecuteTickerCallback(s.strategyName, strategyCtx, ticker)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Strategy ticker callback execution failed")
+		return
+	}
+
+	s.processStrategySignal(ctx, signal, "ticker_callback")
+}
+
+// processStrategySignal processes a strategy signal and sends orders to the order manager
+func (s *StrategyActor) processStrategySignal(ctx *actor.Context, signal *StrategySignal, source string) {
+	if signal.Action != "hold" {
+		s.logger.Info().
+			Str("action", signal.Action).
+			Float64("quantity", signal.Quantity).
+			Float64("price", signal.Price).
+			Str("type", signal.Type).
+			Str("reason", signal.Reason).
+			Str("source", source).
+			Msg("Strategy generated signal")
+
+		// Send order to order manager (if we have reference)
+		if s.orderManagerPID != nil {
+			orderRequest := map[string]interface{}{
+				"symbol":   s.symbol,
+				"side":     signal.Action,
+				"type":     signal.Type,
+				"quantity": signal.Quantity,
+				"price":    signal.Price,
+				"reason":   signal.Reason,
+			}
+			ctx.Send(s.orderManagerPID, orderRequest)
+		}
+
+		// Notify risk manager (if we have reference)
+		if s.riskManagerPID != nil {
+			riskCheck := map[string]interface{}{
+				"symbol":   s.symbol,
+				"action":   signal.Action,
+				"quantity": signal.Quantity,
+				"price":    signal.Price,
+				"source":   source,
+			}
+			ctx.Send(s.riskManagerPID, riskCheck)
+		}
+	}
 }

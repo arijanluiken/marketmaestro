@@ -681,7 +681,7 @@ func (b *BybitExchange) GetBalances(ctx context.Context) ([]*Balance, error) {
 
 	b.logger.Info().Int("total_balances", len(allBalances)).Msg("GetBalances completed")
 	return allBalances, nil
-}// GetPositions retrieves account positions (not applicable for spot trading)
+} // GetPositions retrieves account positions (not applicable for spot trading)
 func (b *BybitExchange) GetPositions(ctx context.Context) ([]*Position, error) {
 	// Spot trading doesn't have positions in the traditional sense
 	return []*Position{}, nil

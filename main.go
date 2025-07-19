@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/joho/godotenv"
 	"github.com/arijanluiken/mercantile/internal/supervisor"
+	"github.com/joho/godotenv"
 )
 
 func main() {

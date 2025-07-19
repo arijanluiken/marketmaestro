@@ -484,7 +484,7 @@ func (e *ExchangeActor) OnTicker(ticker *exchanges.Ticker) {
 
 func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
 	e.logger.Debug().Bool("connected", e.connected).Msg("GetBalances request received")
-	
+
 	if !e.connected {
 		e.logger.Error().Msg("Cannot get balances: not connected")
 		ctx.Respond(fmt.Errorf("not connected"))

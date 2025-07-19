@@ -236,7 +236,7 @@ func (a *APIActor) onPortfolioDataUpdate(ctx *actor.Context, msg exchange.Portfo
 	// Get final counts for logging
 	finalBalances, _ := existingData["balances"].([]map[string]interface{})
 	finalPositions, _ := existingData["positions"].([]map[string]interface{})
-	
+
 	a.logger.Debug().
 		Str("exchange", msg.Exchange).
 		Int("final_balance_count", len(finalBalances)).

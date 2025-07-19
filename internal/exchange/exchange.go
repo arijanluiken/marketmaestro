@@ -11,6 +11,7 @@ import (
 
 	"github.com/arijanluiken/mercantile/internal/order"
 	"github.com/arijanluiken/mercantile/internal/portfolio"
+	"github.com/arijanluiken/mercantile/internal/rebalance"
 	"github.com/arijanluiken/mercantile/internal/risk"
 	"github.com/arijanluiken/mercantile/internal/settings"
 	"github.com/arijanluiken/mercantile/internal/strategy"
@@ -84,6 +85,7 @@ type ExchangeActor struct {
 	riskManagerPID  *actor.PID
 	portfolioPID    *actor.PID
 	settingsPID     *actor.PID
+	rebalancePID    *actor.PID
 	apiActorPID     *actor.PID
 
 	// State
@@ -147,6 +149,8 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onPortfolioRequestPositions(ctx)
 	case SetAPIActorMsg:
 		e.onSetAPIActor(ctx, msg)
+	case map[string]interface{}:
+		e.onGenericMessage(ctx, msg)
 	default:
 		e.logger.Warn().
 			Str("message_type", fmt.Sprintf("%T", msg)).
@@ -276,7 +280,30 @@ func (e *ExchangeActor) startChildActors(ctx *actor.Context) {
 	}, "settings")
 	e.settingsPID = settingsPID
 
-	e.logger.Info().Msg("Child actors started successfully")
+	// Start Rebalance Actor
+	rebalancePID := ctx.SpawnChild(func() actor.Receiver {
+		return rebalance.New(e.exchangeName, e.config, e.db, e.logger.With().Str("actor", "rebalance").Logger())
+	}, "rebalance")
+	e.rebalancePID = rebalancePID
+
+	// Wire up actor references by sending messages
+	// Risk manager needs settings actor
+	ctx.Send(riskManagerPID, risk.SetSettingsActorMsg{SettingsPID: settingsPID})
+
+	// Order manager needs risk manager and settings actor references
+	ctx.Send(orderManagerPID, order.SetActorReferencesMsg{
+		RiskManagerPID: riskManagerPID,
+		SettingsPID:    settingsPID,
+	})
+
+	// Rebalance actor needs references to other actors
+	ctx.Send(rebalancePID, rebalance.SetActorReferencesMsg{
+		ExchangePID:     ctx.PID(),
+		OrderManagerPID: orderManagerPID,
+		PortfolioPID:    portfolioPID,
+	})
+
+	e.logger.Info().Msg("Child actors started and wired successfully")
 }
 
 func (e *ExchangeActor) onConnect(ctx *actor.Context) {
@@ -841,4 +868,186 @@ func (e *ExchangeActor) sendPortfolioDataToAPI(ctx *actor.Context, balances []ma
 		Int("balance_count", balanceCount).
 		Int("position_count", positionCount).
 		Msg("Sent portfolio data to API actor")
+}
+
+// onGenericMessage handles generic map messages (from API)
+func (e *ExchangeActor) onGenericMessage(ctx *actor.Context, msg map[string]interface{}) {
+	msgType, ok := msg["type"].(string)
+	if !ok {
+		e.logger.Warn().Interface("message", msg).Msg("Generic message missing type field")
+		ctx.Respond(map[string]interface{}{"error": "missing type field"})
+		return
+	}
+
+	switch msgType {
+	case "get_risk_parameter":
+		e.handleGetRiskParameter(ctx, msg)
+	case "set_risk_parameter":
+		e.handleSetRiskParameter(ctx, msg)
+	case "get_risk_metrics":
+		e.handleGetRiskMetrics(ctx, msg)
+	case "get_rebalance_status":
+		e.handleGetRebalanceStatus(ctx, msg)
+	case "start_rebalancing":
+		e.handleStartRebalancing(ctx, msg)
+	case "stop_rebalancing":
+		e.handleStopRebalancing(ctx, msg)
+	case "trigger_rebalance":
+		e.handleTriggerRebalance(ctx, msg)
+	case "load_rebalance_script":
+		e.handleLoadRebalanceScript(ctx, msg)
+	default:
+		e.logger.Warn().Str("type", msgType).Msg("Unknown generic message type")
+		ctx.Respond(map[string]interface{}{"error": "unknown message type"})
+	}
+}
+
+func (e *ExchangeActor) handleGetRiskParameter(ctx *actor.Context, msg map[string]interface{}) {
+	parameter, ok := msg["parameter"].(string)
+	if !ok {
+		ctx.Respond(map[string]interface{}{"error": "missing parameter field"})
+		return
+	}
+
+	if e.riskManagerPID == nil {
+		ctx.Respond(map[string]interface{}{"error": "risk manager not available"})
+		return
+	}
+
+	// Forward to risk manager
+	riskMsg := risk.GetRiskParameterMsg{Key: parameter}
+	response, err := ctx.Request(e.riskManagerPID, riskMsg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleSetRiskParameter(ctx *actor.Context, msg map[string]interface{}) {
+	parameter, ok := msg["parameter"].(string)
+	if !ok {
+		ctx.Respond(map[string]interface{}{"error": "missing parameter field"})
+		return
+	}
+
+	value, ok := msg["value"].(string)
+	if !ok {
+		ctx.Respond(map[string]interface{}{"error": "missing value field"})
+		return
+	}
+
+	if e.riskManagerPID == nil {
+		ctx.Respond(map[string]interface{}{"error": "risk manager not available"})
+		return
+	}
+
+	// Forward to risk manager
+	riskMsg := risk.SetRiskParameterMsg{Key: parameter, Value: value}
+	response, err := ctx.Request(e.riskManagerPID, riskMsg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleGetRiskMetrics(ctx *actor.Context, msg map[string]interface{}) {
+	if e.riskManagerPID == nil {
+		ctx.Respond(map[string]interface{}{"error": "risk manager not available"})
+		return
+	}
+
+	// Forward to risk manager
+	riskMsg := risk.GetRiskMetricsMsg{}
+	response, err := ctx.Request(e.riskManagerPID, riskMsg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+// Rebalance message handlers
+func (e *ExchangeActor) handleGetRebalanceStatus(ctx *actor.Context, msg map[string]interface{}) {
+	if e.rebalancePID == nil {
+		ctx.Respond(map[string]interface{}{"error": "rebalance manager not available"})
+		return
+	}
+
+	// Forward to rebalance manager
+	response, err := ctx.Request(e.rebalancePID, msg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleStartRebalancing(ctx *actor.Context, msg map[string]interface{}) {
+	if e.rebalancePID == nil {
+		ctx.Respond(map[string]interface{}{"error": "rebalance manager not available"})
+		return
+	}
+
+	// Forward to rebalance manager
+	response, err := ctx.Request(e.rebalancePID, msg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleStopRebalancing(ctx *actor.Context, msg map[string]interface{}) {
+	if e.rebalancePID == nil {
+		ctx.Respond(map[string]interface{}{"error": "rebalance manager not available"})
+		return
+	}
+
+	// Forward to rebalance manager
+	response, err := ctx.Request(e.rebalancePID, msg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleTriggerRebalance(ctx *actor.Context, msg map[string]interface{}) {
+	if e.rebalancePID == nil {
+		ctx.Respond(map[string]interface{}{"error": "rebalance manager not available"})
+		return
+	}
+
+	// Forward to rebalance manager
+	response, err := ctx.Request(e.rebalancePID, msg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleLoadRebalanceScript(ctx *actor.Context, msg map[string]interface{}) {
+	if e.rebalancePID == nil {
+		ctx.Respond(map[string]interface{}{"error": "rebalance manager not available"})
+		return
+	}
+
+	// Forward to rebalance manager
+	response, err := ctx.Request(e.rebalancePID, msg, 5*time.Second).Result()
+	if err != nil {
+		ctx.Respond(map[string]interface{}{"error": err.Error()})
+		return
+	}
+
+	ctx.Respond(response)
 }

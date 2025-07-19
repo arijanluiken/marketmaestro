@@ -3,11 +3,13 @@ package risk
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	"github.com/anthdm/hollywood/actor"
 	"github.com/rs/zerolog"
 
+	"github.com/arijanluiken/mercantile/internal/settings"
 	"github.com/arijanluiken/mercantile/pkg/config"
 	"github.com/arijanluiken/mercantile/pkg/database"
 )
@@ -49,9 +51,71 @@ type (
 		DailyRiskUsed         float64            `json:"daily_risk_used"`
 	}
 
+	// Risk configuration messages
+	SetRiskParameterMsg struct {
+		Key   string
+		Value string
+	}
+
+	GetRiskParameterMsg struct {
+		Key string
+	}
+
+	LoadRiskConfigMsg struct{}
+
+	// Risk parameter response
+	RiskParameterResponse struct {
+		Parameter string      `json:"parameter"`
+		Value     interface{} `json:"value"`
+		Found     bool        `json:"found"`
+	}
+
 	// Status message
 	StatusMsg struct{}
+
+	// Actor reference messages
+	SetSettingsActorMsg struct {
+		SettingsPID *actor.PID
+	}
 )
+
+// Risk configuration parameters
+type RiskConfig struct {
+	MaxPositionSize    float64 // Max position size as percentage of portfolio
+	MaxDailyLoss       float64 // Max daily loss in base currency
+	MaxDailyVolume     float64 // Max daily volume as multiple of portfolio value
+	MaxDailyRisk       float64 // Max daily risk as percentage of portfolio
+	MaxDrawdown        float64 // Max drawdown from high water mark
+	MaxOpenPositions   int     // Max number of open positions
+	MaxPortfolioRisk   float64 // Max portfolio risk
+	MaxCorrelation     float64 // Max correlation between positions
+	MaxLeverage        float64 // Max leverage allowed
+	MaxDailyTrades     int     // Max daily trades
+	MaxHourlyTrades    int     // Max hourly trades
+	VaRLimit           float64 // Value at Risk limit
+	MaxDrawdownLimit   float64 // Max drawdown limit
+	ConcentrationLimit float64 // Position concentration limit
+}
+
+// Default risk configuration
+func defaultRiskConfig() *RiskConfig {
+	return &RiskConfig{
+		MaxPositionSize:    0.1,    // 10% of portfolio per position
+		MaxDailyLoss:       1000.0, // $1000 max daily loss
+		MaxDailyVolume:     2.0,    // 200% of portfolio value traded per day
+		MaxDailyRisk:       0.2,    // 20% of portfolio at risk per day
+		MaxDrawdown:        0.15,   // 15% drawdown from high water mark
+		MaxOpenPositions:   5,      // Max 5 open positions
+		MaxPortfolioRisk:   0.25,   // 25% of portfolio at risk
+		MaxCorrelation:     0.7,    // 70% max correlation
+		MaxLeverage:        3.0,    // 3x max leverage
+		MaxDailyTrades:     20,     // 20 trades per day
+		MaxHourlyTrades:    5,      // 5 trades per hour
+		VaRLimit:           0.05,   // 5% VaR limit
+		MaxDrawdownLimit:   0.20,   // 20% max drawdown
+		ConcentrationLimit: 0.30,   // 30% max concentration
+	}
+}
 
 // Risk tracking data structures
 type OrderHistory struct {
@@ -84,6 +148,10 @@ type RiskManagerActor struct {
 	maxDrawdown    float64
 	highWaterMark  float64
 	dailyRiskUsed  float64
+
+	// Actor references
+	settingsPID *actor.PID
+	riskConfig  *RiskConfig
 }
 
 // New creates a new risk management actor
@@ -95,7 +163,13 @@ func New(exchangeName string, cfg *config.Config, db *database.DB, logger zerolo
 		logger:       logger,
 		orderHistory: make([]OrderHistory, 0),
 		dailyVolume:  make(map[string]float64),
+		riskConfig:   defaultRiskConfig(),
 	}
+}
+
+// SetSettingsActor sets the reference to the settings actor
+func (r *RiskManagerActor) SetSettingsActor(settingsPID *actor.PID) {
+	r.settingsPID = settingsPID
 }
 
 // Receive handles incoming messages
@@ -111,6 +185,14 @@ func (r *RiskManagerActor) Receive(ctx *actor.Context) {
 		r.onUpdatePortfolioValue(ctx, msg)
 	case GetRiskMetricsMsg:
 		r.onGetRiskMetrics(ctx)
+	case SetRiskParameterMsg:
+		r.onSetRiskParameter(ctx, msg)
+	case GetRiskParameterMsg:
+		r.onGetRiskParameter(ctx, msg)
+	case LoadRiskConfigMsg:
+		r.onLoadRiskConfig(ctx, msg)
+	case SetSettingsActorMsg:
+		r.onSetSettingsActor(ctx, msg)
 	case StatusMsg:
 		r.onStatus(ctx)
 	default:
@@ -129,6 +211,11 @@ func (r *RiskManagerActor) onStarted(ctx *actor.Context) {
 	r.portfolioValue = 100000.0 // Default starting portfolio
 	r.cash = 50000.0
 	r.highWaterMark = r.portfolioValue
+
+	// Load risk configuration from settings if available
+	if r.settingsPID != nil {
+		r.loadRiskConfigFromSettings(ctx)
+	}
 
 	// Start periodic risk calculations
 	r.schedulePeriodicTasks(ctx)
@@ -378,30 +465,22 @@ func (r *RiskManagerActor) getOrdersToday() int {
 }
 
 func (r *RiskManagerActor) schedulePeriodicTasks(ctx *actor.Context) {
-	// Reset daily counters at midnight
+	// Reset daily counters at midnight UTC
 	go func() {
-		// Calculate time until next midnight
-		now := time.Now()
-		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
-		timeUntilMidnight := nextMidnight.Sub(now)
+		// Calculate time until next midnight UTC
+		now := time.Now().UTC()
+		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+		time.Sleep(nextMidnight.Sub(now))
 
-		// Initial timer to reach the next midnight
-		initialTimer := time.NewTimer(timeUntilMidnight)
-
-		select {
-		case <-initialTimer.C:
-			r.resetDailyCounters()
-		}
+		// Reset daily counters immediately
+		r.resetDailyCounters()
 
 		// Now start the 24-hour ticker for subsequent resets
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				r.resetDailyCounters()
-			}
+		for range ticker.C {
+			r.resetDailyCounters()
 		}
 	}()
 
@@ -410,11 +489,8 @@ func (r *RiskManagerActor) schedulePeriodicTasks(ctx *actor.Context) {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 
-		for {
-			select {
-			case <-ticker.C:
-				r.updateRiskMetrics()
-			}
+		for range ticker.C {
+			r.updateRiskMetrics()
 		}
 	}()
 }
@@ -447,4 +523,288 @@ func (r *RiskManagerActor) updateRiskMetrics() {
 		Float64("max_drawdown", r.maxDrawdown).
 		Float64("daily_risk_used", r.dailyRiskUsed).
 		Msg("Risk metrics updated")
+}
+
+// onSetRiskParameter handles setting a risk parameter
+func (r *RiskManagerActor) onSetRiskParameter(ctx *actor.Context, msg SetRiskParameterMsg) {
+	if r.settingsPID == nil {
+		r.logger.Error().Msg("Settings actor not configured")
+		ctx.Respond(fmt.Errorf("settings actor not configured"))
+		return
+	}
+
+	// Store in settings actor
+	settingKey := fmt.Sprintf("risk.%s", msg.Key)
+	settingMsg := settings.SetSettingMsg{
+		Key:   settingKey,
+		Value: msg.Value,
+	}
+
+	result, err := ctx.Request(r.settingsPID, settingMsg, 5*time.Second).Result()
+	if err != nil {
+		r.logger.Error().Err(err).Str("parameter", msg.Key).Msg("Failed to store risk parameter")
+		ctx.Respond(fmt.Errorf("failed to store risk parameter: %w", err))
+		return
+	}
+
+	if errorResult, ok := result.(error); ok {
+		r.logger.Error().Err(errorResult).Str("parameter", msg.Key).Msg("Settings actor returned error")
+		ctx.Respond(errorResult)
+		return
+	}
+
+	// Update local config
+	r.updateLocalRiskConfig(msg.Key, msg.Value)
+
+	r.logger.Info().
+		Str("parameter", msg.Key).
+		Interface("value", msg.Value).
+		Msg("Risk parameter updated")
+
+	ctx.Respond("OK")
+}
+
+// onGetRiskParameter handles getting a risk parameter
+func (r *RiskManagerActor) onGetRiskParameter(ctx *actor.Context, msg GetRiskParameterMsg) {
+	if r.settingsPID == nil {
+		r.logger.Error().Msg("Settings actor not configured")
+		ctx.Respond(RiskParameterResponse{
+			Parameter: msg.Key,
+			Value:     r.getLocalRiskParameter(msg.Key),
+			Found:     true, // Use local config as fallback
+		})
+		return
+	}
+
+	// Get from settings actor
+	settingKey := fmt.Sprintf("risk.%s", msg.Key)
+	settingMsg := settings.GetSettingMsg{Key: settingKey}
+
+	result, err := ctx.Request(r.settingsPID, settingMsg, 5*time.Second).Result()
+	if err != nil {
+		r.logger.Error().Err(err).Str("parameter", msg.Key).Msg("Failed to get risk parameter")
+		ctx.Respond(RiskParameterResponse{
+			Parameter: msg.Key,
+			Value:     r.getLocalRiskParameter(msg.Key),
+			Found:     true, // Use local config as fallback
+		})
+		return
+	}
+
+	if settingResp, ok := result.(settings.SettingResponse); ok {
+		if settingResp.Found {
+			ctx.Respond(RiskParameterResponse{
+				Parameter: msg.Key,
+				Value:     settingResp.Value,
+				Found:     true,
+			})
+		} else {
+			// Return local config value
+			ctx.Respond(RiskParameterResponse{
+				Parameter: msg.Key,
+				Value:     r.getLocalRiskParameter(msg.Key),
+				Found:     true,
+			})
+		}
+		return
+	}
+
+	r.logger.Error().Str("parameter", msg.Key).Msg("Unexpected response from settings actor")
+	ctx.Respond(RiskParameterResponse{
+		Parameter: msg.Key,
+		Value:     r.getLocalRiskParameter(msg.Key),
+		Found:     true,
+	})
+}
+
+// onLoadRiskConfig handles loading the complete risk configuration
+func (r *RiskManagerActor) onLoadRiskConfig(ctx *actor.Context, msg LoadRiskConfigMsg) {
+	if r.settingsPID == nil {
+		r.logger.Error().Msg("Settings actor not configured")
+		ctx.Respond(r.riskConfig) // Return current config
+		return
+	}
+
+	r.loadRiskConfigFromSettings(ctx)
+	ctx.Respond(r.riskConfig)
+}
+
+// loadRiskConfigFromSettings loads risk configuration from the settings actor
+func (r *RiskManagerActor) loadRiskConfigFromSettings(ctx *actor.Context) {
+	if r.settingsPID == nil {
+		r.logger.Warn().Msg("Settings actor not configured, using default risk config")
+		return
+	}
+
+	r.logger.Info().Msg("Loading risk configuration from settings")
+
+	// Load each risk parameter
+	parameters := []string{
+		"max_position_size",
+		"max_daily_loss",
+		"max_portfolio_risk",
+		"max_correlation",
+		"max_leverage",
+		"max_daily_trades",
+		"max_hourly_trades",
+		"var_limit",
+		"max_drawdown_limit",
+		"concentration_limit",
+	}
+
+	for _, param := range parameters {
+		settingKey := fmt.Sprintf("risk.%s", param)
+		settingMsg := settings.GetSettingMsg{Key: settingKey}
+
+		result, err := ctx.Request(r.settingsPID, settingMsg, 5*time.Second).Result()
+		if err != nil {
+			r.logger.Error().Err(err).Str("parameter", param).Msg("Failed to load risk parameter")
+			continue
+		}
+
+		if settingResp, ok := result.(settings.SettingResponse); ok && settingResp.Found {
+			r.updateLocalRiskConfigFromString(param, settingResp.Value)
+		}
+	}
+
+	r.logger.Info().Msg("Risk configuration loaded from settings")
+}
+
+// onSetSettingsActor handles setting the settings actor reference
+func (r *RiskManagerActor) onSetSettingsActor(ctx *actor.Context, msg SetSettingsActorMsg) {
+	r.settingsPID = msg.SettingsPID
+	r.logger.Info().Msg("Settings actor reference set, loading risk configuration")
+
+	// Load risk configuration from settings
+	r.loadRiskConfigFromSettings(ctx)
+}
+
+// updateLocalRiskConfig updates the local risk configuration
+func (r *RiskManagerActor) updateLocalRiskConfig(parameter string, value interface{}) {
+	switch parameter {
+	case "max_position_size":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.MaxPositionSize = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.MaxPositionSize = v
+			}
+		}
+	case "max_daily_loss":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.MaxDailyLoss = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.MaxDailyLoss = v
+			}
+		}
+	case "max_portfolio_risk":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.MaxPortfolioRisk = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.MaxPortfolioRisk = v
+			}
+		}
+	case "max_correlation":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.MaxCorrelation = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.MaxCorrelation = v
+			}
+		}
+	case "max_leverage":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.MaxLeverage = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.MaxLeverage = v
+			}
+		}
+	case "max_daily_trades":
+		if v, ok := value.(int); ok {
+			r.riskConfig.MaxDailyTrades = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.Atoi(s); err == nil {
+				r.riskConfig.MaxDailyTrades = v
+			}
+		}
+	case "max_hourly_trades":
+		if v, ok := value.(int); ok {
+			r.riskConfig.MaxHourlyTrades = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.Atoi(s); err == nil {
+				r.riskConfig.MaxHourlyTrades = v
+			}
+		}
+	case "var_limit":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.VaRLimit = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.VaRLimit = v
+			}
+		}
+	case "max_drawdown_limit":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.MaxDrawdownLimit = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.MaxDrawdownLimit = v
+			}
+		}
+	case "concentration_limit":
+		if v, ok := value.(float64); ok {
+			r.riskConfig.ConcentrationLimit = v
+		} else if s, ok := value.(string); ok {
+			if v, err := strconv.ParseFloat(s, 64); err == nil {
+				r.riskConfig.ConcentrationLimit = v
+			}
+		}
+	}
+}
+
+// updateLocalRiskConfigFromString updates the local risk configuration from string values
+func (r *RiskManagerActor) updateLocalRiskConfigFromString(parameter, value string) {
+	switch parameter {
+	case "max_position_size", "max_daily_loss", "max_portfolio_risk",
+		"max_correlation", "max_leverage", "var_limit",
+		"max_drawdown_limit", "concentration_limit":
+		if v, err := strconv.ParseFloat(value, 64); err == nil {
+			r.updateLocalRiskConfig(parameter, v)
+		}
+	case "max_daily_trades", "max_hourly_trades":
+		if v, err := strconv.Atoi(value); err == nil {
+			r.updateLocalRiskConfig(parameter, v)
+		}
+	}
+}
+
+// getLocalRiskParameter gets a risk parameter from local configuration
+func (r *RiskManagerActor) getLocalRiskParameter(parameter string) interface{} {
+	switch parameter {
+	case "max_position_size":
+		return r.riskConfig.MaxPositionSize
+	case "max_daily_loss":
+		return r.riskConfig.MaxDailyLoss
+	case "max_portfolio_risk":
+		return r.riskConfig.MaxPortfolioRisk
+	case "max_correlation":
+		return r.riskConfig.MaxCorrelation
+	case "max_leverage":
+		return r.riskConfig.MaxLeverage
+	case "max_daily_trades":
+		return r.riskConfig.MaxDailyTrades
+	case "max_hourly_trades":
+		return r.riskConfig.MaxHourlyTrades
+	case "var_limit":
+		return r.riskConfig.VaRLimit
+	case "max_drawdown_limit":
+		return r.riskConfig.MaxDrawdownLimit
+	case "concentration_limit":
+		return r.riskConfig.ConcentrationLimit
+	default:
+		return nil
+	}
 }

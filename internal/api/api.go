@@ -343,6 +343,23 @@ func (a *APIActor) setupRouter(ctx *actor.Context) {
 			r.Get("/", a.handleGetPortfolio(ctx))
 			r.Get("/performance", a.handleGetPerformance(ctx))
 		})
+
+		// Risk management routes
+		r.Route("/risk", func(r chi.Router) {
+			r.Get("/parameters", a.handleGetRiskParameters(ctx))
+			r.Post("/parameters", a.handleSetRiskParameter(ctx))
+			r.Get("/parameters/{parameter}", a.handleGetRiskParameter(ctx))
+			r.Get("/metrics", a.handleGetRiskMetrics(ctx))
+		})
+
+		// Rebalancing routes
+		r.Route("/rebalance", func(r chi.Router) {
+			r.Get("/status", a.handleGetRebalanceStatus(ctx))
+			r.Post("/start", a.handleStartRebalancing(ctx))
+			r.Post("/stop", a.handleStopRebalancing(ctx))
+			r.Post("/trigger", a.handleTriggerRebalance(ctx))
+			r.Post("/load-script", a.handleLoadRebalanceScript(ctx))
+		})
 	})
 
 	// WebSocket endpoint
@@ -798,5 +815,332 @@ func (a *APIActor) handleWebSocket(ctx *actor.Context) http.HandlerFunc {
 		}
 
 		a.logger.Info().Str("remote", r.RemoteAddr).Msg("WebSocket connection closed")
+	}
+}
+
+// Risk management handlers
+
+func (a *APIActor) handleGetRiskParameters(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		a.logger.Info().Msg("Getting all risk parameters")
+
+		// Get all risk parameters
+		parameters := []string{
+			"max_position_size", "max_daily_loss", "max_portfolio_risk",
+			"max_correlation", "max_leverage", "max_daily_trades",
+			"max_hourly_trades", "var_limit", "max_drawdown_limit",
+			"concentration_limit",
+		}
+
+		result := make(map[string]interface{})
+
+		// For now, get from the first available exchange's risk manager
+		for _, exchangePID := range a.exchangePIDs {
+			for _, param := range parameters {
+				// Send request to exchange actor to get risk parameter
+				// Exchange actor will forward to risk manager
+				msg := map[string]interface{}{
+					"type":      "get_risk_parameter",
+					"parameter": param,
+				}
+
+				response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+				if err != nil {
+					a.logger.Error().Err(err).Str("parameter", param).Msg("Failed to get risk parameter")
+					continue
+				}
+
+				result[param] = response
+			}
+			break // Only use first exchange for now
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"exchange":   "all", // or specific exchange
+			"parameters": result,
+		})
+	}
+}
+
+func (a *APIActor) handleSetRiskParameter(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Parameter string `json:"parameter"`
+			Value     string `json:"value"`
+			Exchange  string `json:"exchange,omitempty"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		if req.Parameter == "" || req.Value == "" {
+			http.Error(w, "Parameter and value are required", http.StatusBadRequest)
+			return
+		}
+
+		a.logger.Info().
+			Str("parameter", req.Parameter).
+			Str("value", req.Value).
+			Str("exchange", req.Exchange).
+			Msg("Setting risk parameter")
+
+		// If no exchange specified, apply to all exchanges
+		exchanges := []string{}
+		if req.Exchange != "" {
+			exchanges = append(exchanges, req.Exchange)
+		} else {
+			for exchangeName := range a.exchangePIDs {
+				exchanges = append(exchanges, exchangeName)
+			}
+		}
+
+		results := make(map[string]interface{})
+		for _, exchangeName := range exchanges {
+			if exchangePID, exists := a.exchangePIDs[exchangeName]; exists {
+				msg := map[string]interface{}{
+					"type":      "set_risk_parameter",
+					"parameter": req.Parameter,
+					"value":     req.Value,
+				}
+
+				response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+				if err != nil {
+					a.logger.Error().
+						Err(err).
+						Str("exchange", exchangeName).
+						Str("parameter", req.Parameter).
+						Msg("Failed to set risk parameter")
+					results[exchangeName] = map[string]interface{}{
+						"success": false,
+						"error":   err.Error(),
+					}
+				} else {
+					results[exchangeName] = map[string]interface{}{
+						"success": true,
+						"result":  response,
+					}
+				}
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	}
+}
+
+func (a *APIActor) handleGetRiskParameter(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		parameter := chi.URLParam(r, "parameter")
+		if parameter == "" {
+			http.Error(w, "Parameter name is required", http.StatusBadRequest)
+			return
+		}
+
+		a.logger.Info().Str("parameter", parameter).Msg("Getting risk parameter")
+
+		// Get from first available exchange
+		for exchangeName, exchangePID := range a.exchangePIDs {
+			msg := map[string]interface{}{
+				"type":      "get_risk_parameter",
+				"parameter": parameter,
+			}
+
+			response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+			if err != nil {
+				a.logger.Error().Err(err).Str("parameter", parameter).Msg("Failed to get risk parameter")
+				http.Error(w, "Failed to get risk parameter", http.StatusInternalServerError)
+				return
+			}
+
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"exchange":  exchangeName,
+				"parameter": parameter,
+				"result":    response,
+			})
+			return
+		}
+
+		http.Error(w, "No exchanges available", http.StatusServiceUnavailable)
+	}
+}
+
+func (a *APIActor) handleGetRiskMetrics(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		a.logger.Info().Msg("Getting risk metrics")
+
+		results := make(map[string]interface{})
+
+		// Get risk metrics from all exchanges
+		for exchangeName, exchangePID := range a.exchangePIDs {
+			msg := map[string]interface{}{
+				"type": "get_risk_metrics",
+			}
+
+			response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+			if err != nil {
+				a.logger.Error().
+					Err(err).
+					Str("exchange", exchangeName).
+					Msg("Failed to get risk metrics")
+				results[exchangeName] = map[string]interface{}{
+					"error": err.Error(),
+				}
+			} else {
+				results[exchangeName] = response
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(results)
+	}
+}
+
+// Rebalance handlers
+func (a *APIActor) handleGetRebalanceStatus(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		exchangeName := chi.URLParam(r, "exchange")
+		a.logger.Info().Str("exchange", exchangeName).Msg("Getting rebalance status")
+
+		exchangePID, exists := a.exchangePIDs[exchangeName]
+		if !exists {
+			http.Error(w, "Exchange not found", http.StatusNotFound)
+			return
+		}
+
+		msg := map[string]interface{}{
+			"type": "get_rebalance_status",
+		}
+
+		response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+		if err != nil {
+			a.logger.Error().Err(err).Str("exchange", exchangeName).Msg("Failed to get rebalance status")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+func (a *APIActor) handleStartRebalancing(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		exchangeName := chi.URLParam(r, "exchange")
+		a.logger.Info().Str("exchange", exchangeName).Msg("Starting rebalancing")
+
+		exchangePID, exists := a.exchangePIDs[exchangeName]
+		if !exists {
+			http.Error(w, "Exchange not found", http.StatusNotFound)
+			return
+		}
+
+		msg := map[string]interface{}{
+			"type": "start_rebalancing",
+		}
+
+		response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+		if err != nil {
+			a.logger.Error().Err(err).Str("exchange", exchangeName).Msg("Failed to start rebalancing")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+func (a *APIActor) handleStopRebalancing(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		exchangeName := chi.URLParam(r, "exchange")
+		a.logger.Info().Str("exchange", exchangeName).Msg("Stopping rebalancing")
+
+		exchangePID, exists := a.exchangePIDs[exchangeName]
+		if !exists {
+			http.Error(w, "Exchange not found", http.StatusNotFound)
+			return
+		}
+
+		msg := map[string]interface{}{
+			"type": "stop_rebalancing",
+		}
+
+		response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+		if err != nil {
+			a.logger.Error().Err(err).Str("exchange", exchangeName).Msg("Failed to stop rebalancing")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+func (a *APIActor) handleTriggerRebalance(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		exchangeName := chi.URLParam(r, "exchange")
+		a.logger.Info().Str("exchange", exchangeName).Msg("Triggering manual rebalance")
+
+		exchangePID, exists := a.exchangePIDs[exchangeName]
+		if !exists {
+			http.Error(w, "Exchange not found", http.StatusNotFound)
+			return
+		}
+
+		msg := map[string]interface{}{
+			"type": "trigger_rebalance",
+		}
+
+		response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+		if err != nil {
+			a.logger.Error().Err(err).Str("exchange", exchangeName).Msg("Failed to trigger rebalance")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+	}
+}
+
+func (a *APIActor) handleLoadRebalanceScript(ctx *actor.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		exchangeName := chi.URLParam(r, "exchange")
+		a.logger.Info().Str("exchange", exchangeName).Msg("Loading rebalance script")
+
+		exchangePID, exists := a.exchangePIDs[exchangeName]
+		if !exists {
+			http.Error(w, "Exchange not found", http.StatusNotFound)
+			return
+		}
+
+		var request struct {
+			ScriptPath string `json:"script_path"`
+		}
+
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		msg := map[string]interface{}{
+			"type":        "load_rebalance_script",
+			"script_path": request.ScriptPath,
+		}
+
+		response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
+		if err != nil {
+			a.logger.Error().Err(err).Str("exchange", exchangeName).Msg("Failed to load rebalance script")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
 	}
 }

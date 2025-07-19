@@ -36,10 +36,10 @@ type StrategyActor struct {
 	interval     string // Interval from strategy script
 
 	// Strategy execution
-	engine       *StrategyEngine
-	klineBuffer  []*KlineData
-	orderBook    *exchanges.OrderBook
-	callbacks    *StrategyCallbacks // Cache of available callbacks
+	engine      *StrategyEngine
+	klineBuffer []*KlineData
+	orderBook   *exchanges.OrderBook
+	callbacks   *StrategyCallbacks // Cache of available callbacks
 
 	// Parent actor references
 	orderManagerPID *actor.PID
@@ -146,6 +146,8 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 		Bool("has_on_kline", callbacks.HasOnKline).
 		Bool("has_on_orderbook", callbacks.HasOnOrderBook).
 		Bool("has_on_ticker", callbacks.HasOnTicker).
+		Bool("has_on_start", callbacks.HasOnStart).
+		Bool("has_on_stop", callbacks.HasOnStop).
 		Msg("Strategy callbacks validated")
 
 	// Extract interval from strategy script
@@ -164,6 +166,22 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 
 	s.running = true
 
+	// Call on_start callback if available
+	if callbacks.HasOnStart {
+		strategyCtx := &StrategyContext{
+			Symbol:    s.symbol,
+			Exchange:  s.exchangeName,
+			Klines:    s.klineBuffer,
+			OrderBook: s.orderBook,
+			Config:    s.config,
+			// TODO: Add balances, positions, open orders from exchange
+		}
+		err := s.engine.ExecuteStartCallback(s.strategyName, strategyCtx)
+		if err != nil {
+			s.logger.Error().Err(err).Msg("Failed to execute on_start callback")
+		}
+	}
+
 	// Start periodic strategy execution (every 30 seconds)
 	ctx.SendRepeat(ctx.PID(), ExecuteStrategyMsg{}, 30*time.Second)
 }
@@ -173,6 +191,22 @@ func (s *StrategyActor) onStopStrategy(ctx *actor.Context) {
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Msg("Stopping strategy execution")
+
+	// Call on_stop callback if available
+	if s.callbacks != nil && s.callbacks.HasOnStop {
+		strategyCtx := &StrategyContext{
+			Symbol:    s.symbol,
+			Exchange:  s.exchangeName,
+			Klines:    s.klineBuffer,
+			OrderBook: s.orderBook,
+			Config:    s.config,
+			// TODO: Add balances, positions, open orders from exchange
+		}
+		err := s.engine.ExecuteStopCallback(s.strategyName, strategyCtx)
+		if err != nil {
+			s.logger.Error().Err(err).Msg("Failed to execute on_stop callback")
+		}
+	}
 
 	s.running = false
 }

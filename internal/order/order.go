@@ -9,6 +9,7 @@ import (
 	"github.com/anthdm/hollywood/actor"
 	"github.com/rs/zerolog"
 
+	"github.com/arijanluiken/mercantile/internal/risk"
 	"github.com/arijanluiken/mercantile/pkg/config"
 	"github.com/arijanluiken/mercantile/pkg/database"
 	"github.com/arijanluiken/mercantile/pkg/exchanges"
@@ -86,6 +87,12 @@ type (
 		Symbol string
 		Price  float64
 	}
+
+	// Actor reference messages
+	SetActorReferencesMsg struct {
+		RiskManagerPID *actor.PID
+		SettingsPID    *actor.PID
+	}
 )
 
 // EnhancedOrder extends the basic Order with advanced features
@@ -112,6 +119,10 @@ type OrderManagerActor struct {
 	logger       zerolog.Logger
 	orders       map[string]*EnhancedOrder // Active orders by ID
 	exchange     exchanges.Exchange        // Reference to exchange interface
+
+	// Actor references
+	riskManagerPID *actor.PID
+	settingsPID    *actor.PID
 
 	// Advanced order management
 	stopOrders    map[string]*EnhancedOrder // Stop orders waiting for trigger
@@ -147,6 +158,12 @@ func (o *OrderManagerActor) SetExchange(exchange exchanges.Exchange) {
 	go o.syncOrdersFromExchange(nil)
 }
 
+// SetActorReferences sets references to other actors for communication
+func (o *OrderManagerActor) SetActorReferences(riskManagerPID, settingsPID *actor.PID) {
+	o.riskManagerPID = riskManagerPID
+	o.settingsPID = settingsPID
+}
+
 // Receive handles incoming messages
 func (o *OrderManagerActor) Receive(ctx *actor.Context) {
 	switch msg := ctx.Message().(type) {
@@ -172,6 +189,8 @@ func (o *OrderManagerActor) Receive(ctx *actor.Context) {
 		o.onOrderUpdate(ctx, msg)
 	case PriceUpdateMsg:
 		o.onPriceUpdate(ctx, msg)
+	case SetActorReferencesMsg:
+		o.onSetActorReferences(ctx, msg)
 	case StatusMsg:
 		o.onStatus(ctx)
 	case map[string]interface{}: // Handle strategy signals
@@ -467,6 +486,44 @@ func (o *OrderManagerActor) onPlaceOrder(ctx *actor.Context, msg PlaceOrderMsg) 
 		return
 	}
 
+	// Validate order with risk manager first
+	if o.riskManagerPID != nil {
+		validateMsg := risk.ValidateOrderMsg{
+			Exchange: o.exchangeName,
+			Symbol:   msg.Symbol,
+			Side:     msg.Side,
+			Quantity: msg.Quantity,
+			Price:    msg.Price,
+		}
+
+		resp, err := ctx.Request(o.riskManagerPID, validateMsg, 5*time.Second).Result()
+		if err != nil {
+			o.logger.Error().Err(err).Msg("Failed to validate order with risk manager")
+			ctx.Respond(fmt.Errorf("risk validation failed: %w", err))
+			return
+		}
+
+		if validation, ok := resp.(risk.OrderValidationResponse); ok {
+			if !validation.Approved {
+				o.logger.Warn().
+					Str("reason", validation.Reason).
+					Strs("warnings", validation.Warnings).
+					Msg("Order rejected by risk manager")
+				ctx.Respond(fmt.Errorf("order rejected: %s", validation.Reason))
+				return
+			}
+
+			// Log any warnings
+			if len(validation.Warnings) > 0 {
+				o.logger.Warn().
+					Strs("warnings", validation.Warnings).
+					Msg("Risk manager warnings for order")
+			}
+		}
+	} else {
+		o.logger.Warn().Msg("No risk manager available - proceeding without validation")
+	}
+
 	// Handle advanced order types
 	switch msg.Type {
 	case OrderTypeTrailing:
@@ -683,6 +740,15 @@ func (o *OrderManagerActor) persistOrder(order *exchanges.Order) {
 			Str("status", order.Status).
 			Msg("Order status persisted")
 	}
+}
+
+// onSetActorReferences handles setting references to other actors
+func (o *OrderManagerActor) onSetActorReferences(ctx *actor.Context, msg SetActorReferencesMsg) {
+	o.riskManagerPID = msg.RiskManagerPID
+	o.settingsPID = msg.SettingsPID
+
+	o.logger.Info().Msg("Actor references set successfully")
+	ctx.Respond("OK")
 }
 
 // Advanced order management methods

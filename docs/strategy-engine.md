@@ -116,6 +116,43 @@ def on_ticker(ticker):
     return {"action": "hold"}
 ```
 
+### on_start()
+**Optional**: For strategy initialization  
+**Purpose**: Initialize strategy state, validate configuration, setup variables  
+**Frequency**: Called once when strategy starts
+
+```python
+def on_start():
+    """Initialize strategy when it starts"""
+    print("🚀 Strategy starting")
+    print("📊 Initializing technical analysis parameters")
+    
+    # Validate configuration
+    if config.get("risk_percent", 0) > 5:
+        print("⚠️  High risk percentage detected")
+    
+    # Initialize global state (if needed)
+    print("✅ Strategy initialization complete")
+```
+
+### on_stop()
+**Optional**: For strategy cleanup  
+**Purpose**: Clean up resources, save final state, log summary  
+**Frequency**: Called once when strategy stops
+
+```python
+def on_stop():
+    """Clean up when strategy stops"""
+    print("🛑 Strategy stopping")
+    print("💾 Saving final state")
+    
+    # Log strategy performance summary
+    # Close any open positions if needed
+    # Clean up resources
+    
+    print("✅ Strategy stopped cleanly")
+```
+
 ## Global Variables
 
 These variables are automatically available in all strategy functions:
@@ -408,13 +445,310 @@ fib = fibonacci(recent_high, recent_low)
 fib_618 = fib["61.8"]  # Key retracement level
 ```
 
+#### True Strength Index (TSI)
+```python
+tsi_values = tsi(prices, long_period=25, short_period=13)
+```
+- **prices**: Price array (typically close prices)
+- **long_period**: Long smoothing period (default: 25)
+- **short_period**: Short smoothing period (default: 13)
+- **Returns**: List of TSI values (-100 to 100)
+
+```python
+# Example: TSI momentum analysis
+tsi_line = tsi(close, 25, 13)
+current_tsi = tsi_line[-1]
+
+if current_tsi > 25:
+    # Strong bullish momentum
+elif current_tsi < -25:
+    # Strong bearish momentum
+```
+
+#### Donchian Channels
+```python
+donchian_result = donchian(high, low, period=20)
+```
+- **high, low**: Price arrays
+- **period**: Channel period (default: 20)
+- **Returns**: Dictionary with "upper", "middle", "lower" channel lines
+
+```python
+# Example: Donchian breakout strategy
+channels = donchian(high, low, 20)
+upper_channel = channels["upper"][-1]
+lower_channel = channels["lower"][-1]
+current_price = close[-1]
+
+if current_price > upper_channel:
+    # Upside breakout
+elif current_price < lower_channel:
+    # Downside breakout
+```
+
+#### Advanced CCI with Smoothing
+```python
+advanced_cci_values = advanced_cci(high, low, close, period=14, smooth_period=3)
+```
+- **high, low, close**: Price arrays
+- **period**: CCI calculation period
+- **smooth_period**: Additional smoothing period
+- **Returns**: List of smoothed CCI values
+
+```python
+# Example: Advanced CCI for divergence analysis
+cci_smooth = advanced_cci(high, low, close, 14, 3)
+current_cci = cci_smooth[-1]
+
+if current_cci > 100:
+    # Overbought condition
+elif current_cci < -100:
+    # Oversold condition
+```
+
+#### Elder Ray Index
+```python
+elder_result = elder_ray(high, low, close, period=13)
+```
+- **high, low, close**: Price arrays
+- **period**: EMA period for calculations
+- **Returns**: Dictionary with "bull_power" and "bear_power" arrays
+
+```python
+# Example: Elder Ray bullish/bearish power
+elder = elder_ray(high, low, close, 13)
+bull_power = elder["bull_power"][-1]
+bear_power = elder["bear_power"][-1]
+
+if bull_power > 0 and bear_power > bear_power[-2]:
+    # Bulls gaining strength
+elif bear_power < 0 and bull_power < bull_power[-2]:
+    # Bears gaining strength
+```
+
+#### Detrended Price Oscillator (DPO)
+```python
+dpo_values = detrended(prices, period=14)
+```
+- **prices**: Price array
+- **period**: Detrending period
+- **Returns**: List of detrended values
+
+```python
+# Example: DPO for cycle analysis
+dpo = detrended(close, 14)
+current_dpo = dpo[-1]
+
+if current_dpo > 0:
+    # Price above trend cycle
+else:
+    # Price below trend cycle
+```
+
+#### Kaufman Adaptive Moving Average (KAMA)
+```python
+kama_values = kama(prices, period=10, fast_sc=2, slow_sc=30)
+```
+- **prices**: Price array
+- **period**: Efficiency ratio period
+- **fast_sc**: Fast smoothing constant
+- **slow_sc**: Slow smoothing constant
+- **Returns**: List of adaptive moving average values
+
+```python
+# Example: KAMA trend following
+kama_line = kama(close, 10, 2, 30)
+current_kama = kama_line[-1]
+current_price = close[-1]
+
+if current_price > current_kama:
+    # Uptrend confirmed
+else:
+    # Downtrend or sideways
+```
+
+#### Chaikin Oscillator
+```python
+chaikin_values = chaikin_oscillator(high, low, close, volume, fast_period=3, slow_period=10)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **fast_period**: Fast EMA period
+- **slow_period**: Slow EMA period
+- **Returns**: List of Chaikin oscillator values
+
+```python
+# Example: Chaikin volume-price analysis
+chaikin = chaikin_oscillator(high, low, close, volume, 3, 10)
+current_chaikin = chaikin[-1]
+
+if current_chaikin > 0:
+    # Accumulation (buying pressure)
+else:
+    # Distribution (selling pressure)
+```
+
+#### Ultimate Oscillator
+```python
+ultimate_values = ultimate_oscillator(high, low, close, period1=7, period2=14, period3=28)
+```
+- **high, low, close**: Price arrays
+- **period1, period2, period3**: Three timeframe periods
+- **Returns**: List of Ultimate Oscillator values (0-100)
+
+```python
+# Example: Ultimate Oscillator multi-timeframe momentum
+ultimate = ultimate_oscillator(high, low, close, 7, 14, 28)
+current_ultimate = ultimate[-1]
+
+if current_ultimate > 70:
+    # Overbought across multiple timeframes
+elif current_ultimate < 30:
+    # Oversold across multiple timeframes
+```
+
+#### Heikin Ashi Candlesticks
+```python
+heikin_result = heikin_ashi(open, high, low, close)
+```
+- **open, high, low, close**: OHLC price arrays
+- **Returns**: Dictionary with "open", "high", "low", "close" Heikin Ashi values
+
+```python
+# Example: Heikin Ashi trend analysis
+ha = heikin_ashi(open, high, low, close)
+ha_close = ha["close"][-1]
+ha_open = ha["open"][-1]
+
+if ha_close > ha_open:
+    # Bullish Heikin Ashi candle
+```
+
+#### Vortex Indicator
+```python
+vortex_result = vortex(high, low, close, period=14)
+```
+- **high, low, close**: Price arrays
+- **period**: Calculation period
+- **Returns**: Dictionary with "vi_plus" and "vi_minus" arrays
+
+```python
+# Example: Vortex trend identification
+vi = vortex(high, low, close, 14)
+vi_plus = vi["vi_plus"][-1]
+vi_minus = vi["vi_minus"][-1]
+
+if vi_plus > vi_minus:
+    # Bullish vortex signal
+```
+
+#### Williams Alligator
+```python
+alligator_result = williams_alligator(prices)
+```
+- **prices**: Price array (typically median price)
+- **Returns**: Dictionary with "jaw", "teeth", "lips" lines
+
+```python
+# Example: Alligator trend system
+alligator = williams_alligator(close)
+jaw = alligator["jaw"][-1]
+teeth = alligator["teeth"][-1] 
+lips = alligator["lips"][-1]
+
+# Trending when lines are apart
+if lips > teeth > jaw:
+    # Strong uptrend
+elif lips < teeth < jaw:
+    # Strong downtrend
+```
+
+#### Supertrend
+```python
+supertrend_result = supertrend(high, low, close, period=10, multiplier=3.0)
+```
+- **high, low, close**: Price arrays
+- **period**: ATR period
+- **multiplier**: ATR multiplier
+- **Returns**: Dictionary with "supertrend" values and "trend" booleans
+
+```python
+# Example: Supertrend trading signals
+st = supertrend(high, low, close, 10, 3.0)
+supertrend_line = st["supertrend"][-1]
+is_uptrend = st["trend"][-1]
+current_price = close[-1]
+
+if is_uptrend and current_price > supertrend_line:
+    # Strong buy signal
+elif not is_uptrend and current_price < supertrend_line:
+    # Strong sell signal
+```
+
+#### Stochastic RSI
+```python
+stoch_rsi_result = stochastic_rsi(prices, rsi_period=14, stoch_period=14, k_period=3, d_period=3)
+```
+- **prices**: Price array
+- **rsi_period**: RSI calculation period
+- **stoch_period**: Stochastic calculation period
+- **k_period, d_period**: Smoothing periods
+- **Returns**: Dictionary with "k" and "d" arrays
+
+```python
+# Example: Stochastic RSI momentum
+stoch_rsi = stochastic_rsi(close, 14, 14, 3, 3)
+k_line = stoch_rsi["k"][-1]
+d_line = stoch_rsi["d"][-1]
+
+if k_line > 80:
+    # Overbought
+elif k_line < 20:
+    # Oversold
+```
+
+#### Awesome Oscillator
+```python
+ao_values = awesome_oscillator(high, low)
+```
+- **high, low**: Price arrays
+- **Returns**: List of Awesome Oscillator values
+
+```python
+# Example: Awesome Oscillator momentum
+ao = awesome_oscillator(high, low)
+current_ao = ao[-1]
+previous_ao = ao[-2]
+
+if current_ao > 0 and previous_ao <= 0:
+    # Zero line cross to positive (bullish)
+```
+
+#### Accelerator Oscillator
+```python
+ac_values = accelerator_oscillator(high, low, close)
+```
+- **high, low, close**: Price arrays
+- **Returns**: List of Accelerator Oscillator values
+
+```python
+# Example: Accelerator Oscillator signals
+ac = accelerator_oscillator(high, low, close)
+current_ac = ac[-1]
+
+if current_ac > 0:
+    # Acceleration in current trend direction
+```
+
 ### All Available Indicators Summary
 - **Basic**: `sma`, `ema`, `rsi`, `stddev`, `roc`
-- **Advanced Momentum**: `macd`, `stochastic`, `williams_r`, `cci`, `mfi`
-- **Volatility**: `bollinger`, `atr`, `keltner`
-- **Volume**: `vwap`, `obv`, `mfi`
-- **Trend**: `adx`, `parabolic_sar`, `ichimoku`, `aroon`
+- **Advanced Momentum**: `macd`, `stochastic`, `williams_r`, `cci`, `mfi`, `tsi`, `ultimate_oscillator`, `stochastic_rsi`
+- **Volatility**: `bollinger`, `atr`, `keltner`, `donchian`, `supertrend`
+- **Volume**: `vwap`, `obv`, `mfi`, `chaikin_oscillator`
+- **Trend**: `adx`, `parabolic_sar`, `ichimoku`, `aroon`, `kama`, `detrended`, `williams_alligator`, `vortex`
 - **Support/Resistance**: `pivot_points`, `fibonacci`
+- **Advanced Analysis**: `advanced_cci`, `elder_ray`
+- **Candlestick Patterns**: `heikin_ashi`
+- **Oscillators**: `awesome_oscillator`, `accelerator_oscillator`
 
 ## Utility Functions
 

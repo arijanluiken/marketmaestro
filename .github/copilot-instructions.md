@@ -32,7 +32,7 @@ func (s *StrategyActor) Receive(ctx *actor.Context) {
 }
 ```
 
-When updating strategy engine functions, technical indicators etc ensure everything is documented in /docs/strategy-engine.md including examples and usage patterns.
+When updating strategy engine functions, technical indicators etc ensure everything is documented in /docs/strategy-engine.md including examples and usage patterns. Ensure all technical indicators have unit tests to validate functionality.
 
 ### 2. Exchange Interface Pattern
 - **Abstract interface**: `pkg/exchanges/interface.go` defines common exchange operations
@@ -130,3 +130,15 @@ go build -o bin/mercantile .    # Build binary
 - **Real-time data**: WebSocket connections stream actor state to frontend
 
 This architecture requires thinking in **message passing** and **actor isolation** rather than traditional function calls and shared state.
+
+# Changelog
+
+keep a CHANGELOG.md in the root of the project to track changes, improvements, and bug fixes. This helps maintain clarity on what has been modified over time.
+
+# Mock functions
+
+Do not implement mock functions always use live data or testnet environments for testing. Mocking can lead to discrepancies between test and production behavior, especially in trading systems where real-time data is crucial for decision-making.
+
+# API
+
+Ensure all API endpoints are documented in the OpenAPI specification. When adding new features to the bot also expose an API for the features. The api endpoint should be fully functional and never use mock data.

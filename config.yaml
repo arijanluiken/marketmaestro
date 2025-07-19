@@ -58,12 +58,3 @@ strategies:
   directory: "./strategies"
   default_interval: "1m"
   max_concurrent: 10
-
-# Risk management settings
-risk:
-  max_position_size: 0.1      # Max 10% of portfolio per position
-  max_daily_loss: 1000.0      # Max daily loss in base currency
-  max_daily_volume: 2.0       # Max 200% of portfolio value traded per day
-  max_daily_risk: 0.2         # Max 20% of portfolio at risk per day
-  max_drawdown: 0.15          # Max 15% drawdown from high water mark
-  max_open_positions: 5       # Max number of open positions

@@ -79,6 +79,8 @@ type StrategyCallbacks struct {
 	HasOnOrderBook bool
 	HasOnTicker    bool
 	HasSettings    bool
+	HasOnStart     bool
+	HasOnStop      bool
 }
 
 // ValidateCallbacks checks which callbacks are available in a strategy script
@@ -109,28 +111,40 @@ func (se *StrategyEngine) ValidateCallbacks(strategyName string) (*StrategyCallb
 
 	// Check which callbacks are defined
 	callbacks := &StrategyCallbacks{}
-	
+
 	if onKlineFn, ok := result["on_kline"]; ok {
 		if _, ok := onKlineFn.(*starlark.Function); ok {
 			callbacks.HasOnKline = true
 		}
 	}
-	
+
 	if onOrderBookFn, ok := result["on_orderbook"]; ok {
 		if _, ok := onOrderBookFn.(*starlark.Function); ok {
 			callbacks.HasOnOrderBook = true
 		}
 	}
-	
+
 	if onTickerFn, ok := result["on_ticker"]; ok {
 		if _, ok := onTickerFn.(*starlark.Function); ok {
 			callbacks.HasOnTicker = true
 		}
 	}
-	
+
 	if settingsFn, ok := result["settings"]; ok {
 		if _, ok := settingsFn.(*starlark.Function); ok {
 			callbacks.HasSettings = true
+		}
+	}
+
+	if onStartFn, ok := result["on_start"]; ok {
+		if _, ok := onStartFn.(*starlark.Function); ok {
+			callbacks.HasOnStart = true
+		}
+	}
+
+	if onStopFn, ok := result["on_stop"]; ok {
+		if _, ok := onStopFn.(*starlark.Function); ok {
+			callbacks.HasOnStop = true
 		}
 	}
 
@@ -140,6 +154,8 @@ func (se *StrategyEngine) ValidateCallbacks(strategyName string) (*StrategyCallb
 		Bool("has_on_orderbook", callbacks.HasOnOrderBook).
 		Bool("has_on_ticker", callbacks.HasOnTicker).
 		Bool("has_settings", callbacks.HasSettings).
+		Bool("has_on_start", callbacks.HasOnStart).
+		Bool("has_on_stop", callbacks.HasOnStop).
 		Msg("Strategy callbacks validated")
 
 	return callbacks, nil
@@ -181,7 +197,7 @@ func (se *StrategyEngine) setupBuiltins() {
 			if len(args) < 1 || len(args) > 2 {
 				return nil, fmt.Errorf("round() takes 1 or 2 arguments")
 			}
-			
+
 			var num float64
 			if x, ok := args[0].(starlark.Float); ok {
 				num = float64(x)
@@ -191,7 +207,7 @@ func (se *StrategyEngine) setupBuiltins() {
 			} else {
 				return nil, fmt.Errorf("round() requires a number")
 			}
-			
+
 			precision := 0
 			if len(args) == 2 {
 				if p, ok := args[1].(starlark.Int); ok {
@@ -201,10 +217,10 @@ func (se *StrategyEngine) setupBuiltins() {
 					return nil, fmt.Errorf("round() precision must be an integer")
 				}
 			}
-			
+
 			multiplier := math.Pow(10, float64(precision))
 			rounded := math.Round(num*multiplier) / multiplier
-			
+
 			if precision == 0 {
 				return starlark.MakeInt64(int64(rounded)), nil
 			}
@@ -233,6 +249,23 @@ func (se *StrategyEngine) setupBuiltins() {
 		"pivot_points":  starlark.NewBuiltin("pivot_points", se.pivotPoints),
 		"fibonacci":     starlark.NewBuiltin("fibonacci", se.fibonacci),
 		"aroon":         starlark.NewBuiltin("aroon", se.aroon),
+		// Additional Advanced Indicators
+		"tsi":                 starlark.NewBuiltin("tsi", se.tsi),
+		"donchian":            starlark.NewBuiltin("donchian", se.donchian),
+		"advanced_cci":        starlark.NewBuiltin("advanced_cci", se.advancedCCI),
+		"elder_ray":           starlark.NewBuiltin("elder_ray", se.elderRay),
+		"detrended":           starlark.NewBuiltin("detrended", se.detrended),
+		"kama":                starlark.NewBuiltin("kama", se.kama),
+		"chaikin_oscillator":  starlark.NewBuiltin("chaikin_oscillator", se.chaikinOscillator),
+		"ultimate_oscillator": starlark.NewBuiltin("ultimate_oscillator", se.ultimateOscillator),
+		// Extended Advanced Indicators
+		"heikin_ashi":            starlark.NewBuiltin("heikin_ashi", se.heikinAshi),
+		"vortex":                 starlark.NewBuiltin("vortex", se.vortex),
+		"williams_alligator":     starlark.NewBuiltin("williams_alligator", se.williamsAlligator),
+		"supertrend":             starlark.NewBuiltin("supertrend", se.supertrend),
+		"stochastic_rsi":         starlark.NewBuiltin("stochastic_rsi", se.stochasticRSI),
+		"awesome_oscillator":     starlark.NewBuiltin("awesome_oscillator", se.awesomeOscillator),
+		"accelerator_oscillator": starlark.NewBuiltin("accelerator_oscillator", se.acceleratorOscillator),
 		// Utility functions
 		"highest":    starlark.NewBuiltin("highest", se.highest),
 		"lowest":     starlark.NewBuiltin("lowest", se.lowest),
@@ -603,6 +636,78 @@ func (se *StrategyEngine) ExecuteTickerCallback(strategyName string, ctx *Strate
 
 	// Fallback to legacy execution if no callback
 	return se.extractSignal(result)
+}
+
+// ExecuteStartCallback runs the on_start callback in a strategy script
+func (se *StrategyEngine) ExecuteStartCallback(strategyName string, ctx *StrategyContext) error {
+	// Load strategy script
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create Starlark thread
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-start", strategyName),
+	}
+
+	// Prepare globals with context data
+	globals := se.prepareGlobals(ctx)
+
+	// Execute strategy
+	result, err := starlark.ExecFile(thread, strategyName, script, globals)
+	if err != nil {
+		return fmt.Errorf("strategy execution failed: %w", err)
+	}
+
+	// Check if on_start function exists and call it
+	if onStartFn, ok := result["on_start"]; ok {
+		if fn, ok := onStartFn.(*starlark.Function); ok {
+			_, err := starlark.Call(thread, fn, starlark.Tuple{}, nil)
+			if err != nil {
+				return fmt.Errorf("on_start callback failed: %w", err)
+			}
+			se.logger.Info().Str("strategy", strategyName).Msg("Strategy start callback executed successfully")
+		}
+	}
+
+	return nil
+}
+
+// ExecuteStopCallback runs the on_stop callback in a strategy script
+func (se *StrategyEngine) ExecuteStopCallback(strategyName string, ctx *StrategyContext) error {
+	// Load strategy script
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create Starlark thread
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-stop", strategyName),
+	}
+
+	// Prepare globals with context data
+	globals := se.prepareGlobals(ctx)
+
+	// Execute strategy
+	result, err := starlark.ExecFile(thread, strategyName, script, globals)
+	if err != nil {
+		return fmt.Errorf("strategy execution failed: %w", err)
+	}
+
+	// Check if on_stop function exists and call it
+	if onStopFn, ok := result["on_stop"]; ok {
+		if fn, ok := onStopFn.(*starlark.Function); ok {
+			_, err := starlark.Call(thread, fn, starlark.Tuple{}, nil)
+			if err != nil {
+				return fmt.Errorf("on_stop callback failed: %w", err)
+			}
+			se.logger.Info().Str("strategy", strategyName).Msg("Strategy stop callback executed successfully")
+		}
+	}
+
+	return nil
 }
 
 // extractSignalFromDict extracts a trading signal from a Starlark dictionary
@@ -1472,4 +1577,499 @@ func (se *StrategyEngine) boolListToStarlark(values []bool) *starlark.List {
 		list.Append(starlark.Bool(v))
 	}
 	return list
+}
+
+// New technical indicator wrapper functions
+
+// tsi calculates True Strength Index
+func (se *StrategyEngine) tsi(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("tsi() takes exactly 3 arguments (prices, long_period, short_period)")
+	}
+
+	prices, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("tsi() first argument must be a list")
+	}
+
+	longPeriod, ok := args[1].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("tsi() long_period must be an integer")
+	}
+	longPeriodInt, _ := longPeriod.Int64()
+
+	shortPeriod, ok := args[2].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("tsi() short_period must be an integer")
+	}
+	shortPeriodInt, _ := shortPeriod.Int64()
+
+	result := se.indicators.calculateTSI(prices, int(longPeriodInt), int(shortPeriodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+// donchian calculates Donchian Channels
+func (se *StrategyEngine) donchian(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("donchian() takes exactly 3 arguments (high, low, period)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("donchian() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("donchian() low must be a list")
+	}
+
+	period, ok := args[2].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("donchian() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	upper, middle, lower := se.indicators.calculateDonchianChannels(high, low, int(periodInt))
+
+	result := starlark.NewDict(3)
+	result.SetKey(starlark.String("upper"), se.floatListToStarlark(upper))
+	result.SetKey(starlark.String("middle"), se.floatListToStarlark(middle))
+	result.SetKey(starlark.String("lower"), se.floatListToStarlark(lower))
+	return result, nil
+}
+
+// advanced_cci calculates Advanced CCI with smoothing
+func (se *StrategyEngine) advancedCCI(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 5 {
+		return nil, fmt.Errorf("advanced_cci() takes exactly 5 arguments (high, low, close, period, smooth_period)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("advanced_cci() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("advanced_cci() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("advanced_cci() close must be a list")
+	}
+
+	period, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("advanced_cci() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	smoothPeriod, ok := args[4].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("advanced_cci() smooth_period must be an integer")
+	}
+	smoothPeriodInt, _ := smoothPeriod.Int64()
+
+	result := se.indicators.calculateAdvancedCCI(high, low, close, int(periodInt), int(smoothPeriodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+// elder_ray calculates Elder Ray Index
+func (se *StrategyEngine) elderRay(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 4 {
+		return nil, fmt.Errorf("elder_ray() takes exactly 4 arguments (high, low, close, period)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("elder_ray() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("elder_ray() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("elder_ray() close must be a list")
+	}
+
+	period, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("elder_ray() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	bullPower, bearPower := se.indicators.calculateElderRay(high, low, close, int(periodInt))
+
+	result := starlark.NewDict(2)
+	result.SetKey(starlark.String("bull_power"), se.floatListToStarlark(bullPower))
+	result.SetKey(starlark.String("bear_power"), se.floatListToStarlark(bearPower))
+	return result, nil
+}
+
+// detrended calculates Detrended Price Oscillator
+func (se *StrategyEngine) detrended(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("detrended() takes exactly 2 arguments (prices, period)")
+	}
+
+	prices, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("detrended() prices must be a list")
+	}
+
+	period, ok := args[1].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("detrended() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	result := se.indicators.calculateDetrended(prices, int(periodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+// kama calculates Kaufman Adaptive Moving Average
+func (se *StrategyEngine) kama(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 4 {
+		return nil, fmt.Errorf("kama() takes exactly 4 arguments (prices, period, fast_sc, slow_sc)")
+	}
+
+	prices, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("kama() prices must be a list")
+	}
+
+	period, ok := args[1].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("kama() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	fastSC, ok := args[2].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("kama() fast_sc must be an integer")
+	}
+	fastSCInt, _ := fastSC.Int64()
+
+	slowSC, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("kama() slow_sc must be an integer")
+	}
+	slowSCInt, _ := slowSC.Int64()
+
+	result := se.indicators.calculateKaufmanAMA(prices, int(periodInt), int(fastSCInt), int(slowSCInt))
+	return se.floatListToStarlark(result), nil
+}
+
+// chaikin_oscillator calculates Chaikin Oscillator
+func (se *StrategyEngine) chaikinOscillator(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 6 {
+		return nil, fmt.Errorf("chaikin_oscillator() takes exactly 6 arguments (high, low, close, volume, fast_period, slow_period)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("chaikin_oscillator() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("chaikin_oscillator() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("chaikin_oscillator() close must be a list")
+	}
+
+	volume, ok := args[3].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("chaikin_oscillator() volume must be a list")
+	}
+
+	fastPeriod, ok := args[4].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("chaikin_oscillator() fast_period must be an integer")
+	}
+	fastPeriodInt, _ := fastPeriod.Int64()
+
+	slowPeriod, ok := args[5].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("chaikin_oscillator() slow_period must be an integer")
+	}
+	slowPeriodInt, _ := slowPeriod.Int64()
+
+	result := se.indicators.calculateChaikinOscillator(high, low, close, volume, int(fastPeriodInt), int(slowPeriodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+// ultimate_oscillator calculates Ultimate Oscillator
+func (se *StrategyEngine) ultimateOscillator(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 6 {
+		return nil, fmt.Errorf("ultimate_oscillator() takes exactly 6 arguments (high, low, close, period1, period2, period3)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("ultimate_oscillator() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("ultimate_oscillator() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("ultimate_oscillator() close must be a list")
+	}
+
+	period1, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("ultimate_oscillator() period1 must be an integer")
+	}
+	period1Int, _ := period1.Int64()
+
+	period2, ok := args[4].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("ultimate_oscillator() period2 must be an integer")
+	}
+	period2Int, _ := period2.Int64()
+
+	period3, ok := args[5].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("ultimate_oscillator() period3 must be an integer")
+	}
+	period3Int, _ := period3.Int64()
+
+	result := se.indicators.calculateUltimateOscillator(high, low, close, int(period1Int), int(period2Int), int(period3Int))
+	return se.floatListToStarlark(result), nil
+}
+
+// heikin_ashi calculates Heikin Ashi candlesticks
+func (se *StrategyEngine) heikinAshi(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 4 {
+		return nil, fmt.Errorf("heikin_ashi() takes exactly 4 arguments (open, high, low, close)")
+	}
+
+	open, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("heikin_ashi() open must be a list")
+	}
+
+	high, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("heikin_ashi() high must be a list")
+	}
+
+	low, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("heikin_ashi() low must be a list")
+	}
+
+	close, ok := args[3].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("heikin_ashi() close must be a list")
+	}
+
+	haOpen, haHigh, haLow, haClose := se.indicators.calculateHeikinAshi(open, high, low, close)
+
+	result := starlark.NewDict(4)
+	result.SetKey(starlark.String("open"), se.floatListToStarlark(haOpen))
+	result.SetKey(starlark.String("high"), se.floatListToStarlark(haHigh))
+	result.SetKey(starlark.String("low"), se.floatListToStarlark(haLow))
+	result.SetKey(starlark.String("close"), se.floatListToStarlark(haClose))
+	return result, nil
+}
+
+// vortex calculates Vortex Indicator
+func (se *StrategyEngine) vortex(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 4 {
+		return nil, fmt.Errorf("vortex() takes exactly 4 arguments (high, low, close, period)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("vortex() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("vortex() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("vortex() close must be a list")
+	}
+
+	period, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("vortex() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	viPlus, viMinus := se.indicators.calculateVortex(high, low, close, int(periodInt))
+
+	result := starlark.NewDict(2)
+	result.SetKey(starlark.String("vi_plus"), se.floatListToStarlark(viPlus))
+	result.SetKey(starlark.String("vi_minus"), se.floatListToStarlark(viMinus))
+	return result, nil
+}
+
+// williams_alligator calculates Williams Alligator
+func (se *StrategyEngine) williamsAlligator(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 1 {
+		return nil, fmt.Errorf("williams_alligator() takes exactly 1 argument (prices)")
+	}
+
+	prices, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("williams_alligator() prices must be a list")
+	}
+
+	jaw, teeth, lips := se.indicators.calculateWilliamsAlligator(prices)
+
+	result := starlark.NewDict(3)
+	result.SetKey(starlark.String("jaw"), se.floatListToStarlark(jaw))
+	result.SetKey(starlark.String("teeth"), se.floatListToStarlark(teeth))
+	result.SetKey(starlark.String("lips"), se.floatListToStarlark(lips))
+	return result, nil
+}
+
+// supertrend calculates Supertrend indicator
+func (se *StrategyEngine) supertrend(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 5 {
+		return nil, fmt.Errorf("supertrend() takes exactly 5 arguments (high, low, close, period, multiplier)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("supertrend() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("supertrend() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("supertrend() close must be a list")
+	}
+
+	period, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("supertrend() period must be an integer")
+	}
+	periodInt, _ := period.Int64()
+
+	multiplier, ok := args[4].(starlark.Float)
+	if !ok {
+		if m, ok := args[4].(starlark.Int); ok {
+			mInt, _ := m.Int64()
+			multiplier = starlark.Float(mInt)
+		} else {
+			return nil, fmt.Errorf("supertrend() multiplier must be a number")
+		}
+	}
+
+	supertrendValues, trend := se.indicators.calculateSupertrend(high, low, close, int(periodInt), float64(multiplier))
+
+	result := starlark.NewDict(2)
+	result.SetKey(starlark.String("supertrend"), se.floatListToStarlark(supertrendValues))
+	result.SetKey(starlark.String("trend"), se.boolListToStarlark(trend))
+	return result, nil
+}
+
+// stochastic_rsi calculates Stochastic RSI
+func (se *StrategyEngine) stochasticRSI(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 5 {
+		return nil, fmt.Errorf("stochastic_rsi() takes exactly 5 arguments (prices, rsi_period, stoch_period, k_period, d_period)")
+	}
+
+	prices, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("stochastic_rsi() prices must be a list")
+	}
+
+	rsiPeriod, ok := args[1].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("stochastic_rsi() rsi_period must be an integer")
+	}
+	rsiPeriodInt, _ := rsiPeriod.Int64()
+
+	stochPeriod, ok := args[2].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("stochastic_rsi() stoch_period must be an integer")
+	}
+	stochPeriodInt, _ := stochPeriod.Int64()
+
+	kPeriod, ok := args[3].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("stochastic_rsi() k_period must be an integer")
+	}
+	kPeriodInt, _ := kPeriod.Int64()
+
+	dPeriod, ok := args[4].(starlark.Int)
+	if !ok {
+		return nil, fmt.Errorf("stochastic_rsi() d_period must be an integer")
+	}
+	dPeriodInt, _ := dPeriod.Int64()
+
+	k, d := se.indicators.calculateStochasticRSI(prices, int(rsiPeriodInt), int(stochPeriodInt), int(kPeriodInt), int(dPeriodInt))
+
+	result := starlark.NewDict(2)
+	result.SetKey(starlark.String("k"), se.floatListToStarlark(k))
+	result.SetKey(starlark.String("d"), se.floatListToStarlark(d))
+	return result, nil
+}
+
+// awesome_oscillator calculates Awesome Oscillator
+func (se *StrategyEngine) awesomeOscillator(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("awesome_oscillator() takes exactly 2 arguments (high, low)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("awesome_oscillator() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("awesome_oscillator() low must be a list")
+	}
+
+	result := se.indicators.calculateAwesome(high, low)
+	return se.floatListToStarlark(result), nil
+}
+
+// accelerator_oscillator calculates Accelerator Oscillator
+func (se *StrategyEngine) acceleratorOscillator(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 3 {
+		return nil, fmt.Errorf("accelerator_oscillator() takes exactly 3 arguments (high, low, close)")
+	}
+
+	high, ok := args[0].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("accelerator_oscillator() high must be a list")
+	}
+
+	low, ok := args[1].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("accelerator_oscillator() low must be a list")
+	}
+
+	close, ok := args[2].(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("accelerator_oscillator() close must be a list")
+	}
+
+	result := se.indicators.calculateAcceleratorOscillator(high, low, close)
+	return se.floatListToStarlark(result), nil
 }

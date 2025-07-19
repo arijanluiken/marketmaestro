@@ -7,10 +7,19 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/joho/godotenv"
 	"github.com/arijanluiken/mercantile/internal/supervisor"
 )
 
 func main() {
+	// Load environment variables from .env file
+	if err := godotenv.Load(); err != nil {
+		log.Printf("Warning: Could not load .env file: %v", err)
+		log.Printf("Continuing with system environment variables...")
+	} else {
+		log.Println("Successfully loaded .env file")
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

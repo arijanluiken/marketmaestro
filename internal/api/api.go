@@ -13,6 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/rs/zerolog"
 
+	"github.com/arijanluiken/mercantile/internal/exchange"
 	"github.com/arijanluiken/mercantile/pkg/config"
 )
 
@@ -25,25 +26,37 @@ type (
 		Exchange     string
 		PortfolioPID *actor.PID
 	}
+	SetExchangeActorMsg struct {
+		Exchange    string
+		ExchangePID *actor.PID
+	}
 )
 
 // APIActor provides REST API and WebSocket endpoints
 type APIActor struct {
-	config        *config.Config
-	logger        zerolog.Logger
-	server        *http.Server
-	router        chi.Router
-	wsUpgrader    websocket.Upgrader
-	supervisorPID *actor.PID
-	portfolioPIDs map[string]*actor.PID // exchange name -> portfolio PID
+	config          *config.Config
+	logger          zerolog.Logger
+	server          *http.Server
+	router          chi.Router
+	wsUpgrader      websocket.Upgrader
+	supervisorPID   *actor.PID
+	portfolioPIDs   map[string]*actor.PID               // exchange name -> portfolio PID
+	exchangePIDs    map[string]*actor.PID               // exchange name -> exchange PID
+	strategiesCache map[string][]map[string]interface{} // exchange name -> strategies
+	portfolioCache  map[string]map[string]interface{}   // exchange name -> portfolio data
+	ordersCache     map[string][]map[string]interface{} // exchange name -> orders
 }
 
 // New creates a new API actor
 func New(cfg *config.Config, logger zerolog.Logger) *APIActor {
 	return &APIActor{
-		config:        cfg,
-		logger:        logger,
-		portfolioPIDs: make(map[string]*actor.PID),
+		config:          cfg,
+		logger:          logger,
+		portfolioPIDs:   make(map[string]*actor.PID),
+		exchangePIDs:    make(map[string]*actor.PID),
+		strategiesCache: make(map[string][]map[string]interface{}),
+		portfolioCache:  make(map[string]map[string]interface{}),
+		ordersCache:     make(map[string][]map[string]interface{}),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow all origins for development
@@ -73,6 +86,14 @@ func (a *APIActor) Receive(ctx *actor.Context) {
 		a.onStatus(ctx)
 	case SetPortfolioActorMsg:
 		a.onSetPortfolioActor(ctx, msg)
+	case SetExchangeActorMsg:
+		a.onSetExchangeActor(ctx, msg)
+	case exchange.StrategyDataUpdateMsg:
+		a.onStrategyDataUpdate(ctx, msg)
+	case exchange.PortfolioDataUpdateMsg:
+		a.onPortfolioDataUpdate(ctx, msg)
+	case exchange.OrdersDataUpdateMsg:
+		a.onOrdersDataUpdate(ctx, msg)
 	default:
 		a.logger.Debug().
 			Str("message_type", fmt.Sprintf("%T", msg)).
@@ -90,6 +111,9 @@ func (a *APIActor) onStarted(ctx *actor.Context) {
 
 	// Auto-start the server
 	ctx.Send(ctx.PID(), StartServerMsg{})
+
+	// Start periodic strategy data refresh
+	go a.startStrategyDataRefresh(ctx)
 }
 
 func (a *APIActor) onStopped(ctx *actor.Context) {
@@ -156,6 +180,106 @@ func (a *APIActor) onSetPortfolioActor(ctx *actor.Context, msg SetPortfolioActor
 	a.logger.Info().
 		Str("exchange", msg.Exchange).
 		Msg("Portfolio actor reference set")
+}
+
+func (a *APIActor) onSetExchangeActor(ctx *actor.Context, msg SetExchangeActorMsg) {
+	a.exchangePIDs[msg.Exchange] = msg.ExchangePID
+	a.logger.Info().
+		Str("exchange", msg.Exchange).
+		Msg("Exchange actor reference set")
+}
+
+func (a *APIActor) onStrategyDataUpdate(ctx *actor.Context, msg exchange.StrategyDataUpdateMsg) {
+	a.strategiesCache[msg.Exchange] = msg.Strategies
+	a.logger.Debug().
+		Str("exchange", msg.Exchange).
+		Int("strategy_count", len(msg.Strategies)).
+		Msg("Strategy data cache updated")
+}
+
+func (a *APIActor) onPortfolioDataUpdate(ctx *actor.Context, msg exchange.PortfolioDataUpdateMsg) {
+	// Get existing portfolio data for this exchange, or create new if it doesn't exist
+	existingData, exists := a.portfolioCache[msg.Exchange]
+	if !exists {
+		existingData = map[string]interface{}{
+			"balances":  []map[string]interface{}{},
+			"positions": []map[string]interface{}{},
+			"exchange":  msg.Exchange,
+			"updated":   time.Now().Unix(),
+		}
+	}
+
+	// Update balances if provided (don't overwrite with empty)
+	if len(msg.Balances) > 0 {
+		existingData["balances"] = msg.Balances
+		a.logger.Debug().
+			Str("exchange", msg.Exchange).
+			Int("new_balance_count", len(msg.Balances)).
+			Msg("Updated balances in portfolio cache")
+	}
+
+	// Update positions if provided (don't overwrite with empty)
+	if len(msg.Positions) > 0 {
+		existingData["positions"] = msg.Positions
+		a.logger.Debug().
+			Str("exchange", msg.Exchange).
+			Int("new_position_count", len(msg.Positions)).
+			Msg("Updated positions in portfolio cache")
+	}
+
+	// Always update timestamp
+	existingData["updated"] = time.Now().Unix()
+
+	// Store back the merged data
+	a.portfolioCache[msg.Exchange] = existingData
+
+	// Get final counts for logging
+	finalBalances, _ := existingData["balances"].([]map[string]interface{})
+	finalPositions, _ := existingData["positions"].([]map[string]interface{})
+	
+	a.logger.Debug().
+		Str("exchange", msg.Exchange).
+		Int("final_balance_count", len(finalBalances)).
+		Int("final_position_count", len(finalPositions)).
+		Int("incoming_balance_count", len(msg.Balances)).
+		Int("incoming_position_count", len(msg.Positions)).
+		Msg("Portfolio data cache updated")
+}
+
+func (a *APIActor) onOrdersDataUpdate(ctx *actor.Context, msg exchange.OrdersDataUpdateMsg) {
+	a.ordersCache[msg.Exchange] = msg.Orders
+	a.logger.Debug().
+		Str("exchange", msg.Exchange).
+		Int("order_count", len(msg.Orders)).
+		Msg("Orders data cache updated")
+}
+
+func (a *APIActor) startStrategyDataRefresh(ctx *actor.Context) {
+	ticker := time.NewTicker(30 * time.Second) // Refresh every 30 seconds
+	defer ticker.Stop()
+
+	// Initial refresh after 5 seconds to let exchanges start up
+	time.Sleep(5 * time.Second)
+	a.refreshLiveData(ctx)
+
+	for range ticker.C {
+		a.refreshLiveData(ctx)
+	}
+}
+
+func (a *APIActor) refreshLiveData(ctx *actor.Context) {
+	for exchangeName, exchangePID := range a.exchangePIDs {
+		// Request strategies data
+		ctx.Send(exchangePID, exchange.GetStrategiesMsg{})
+
+		// Request balances and positions data
+		ctx.Send(exchangePID, exchange.GetBalancesMsg{})
+		ctx.Send(exchangePID, exchange.GetPositionsMsg{})
+
+		a.logger.Debug().
+			Str("exchange", exchangeName).
+			Msg("Triggered periodic data refresh (strategies, balances, positions)")
+	}
 }
 
 func (a *APIActor) setupRouter(ctx *actor.Context) {
@@ -341,24 +465,45 @@ func (a *APIActor) handleGetExchangeStatus(ctx *actor.Context) http.HandlerFunc 
 func (a *APIActor) handleGetBalances(ctx *actor.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		exchangeName := chi.URLParam(r, "exchange")
-		// TODO: Get actual balances from exchange actor
-		balances := []map[string]interface{}{
-			{
-				"asset":     "BTC",
-				"available": 1.0,
-				"locked":    0.0,
-				"total":     1.0,
-			},
-			{
-				"asset":     "USDT",
-				"available": 50000.0,
-				"locked":    0.0,
-				"total":     50000.0,
-			},
+
+		// Check if exchange is connected
+		_, exists := a.exchangePIDs[exchangeName]
+		if !exists {
+			a.writeJSON(w, map[string]interface{}{
+				"error":    "Exchange not found",
+				"exchange": exchangeName,
+				"balances": []interface{}{},
+			})
+			return
 		}
+
+		// Get cached portfolio data for this exchange
+		portfolioData, hasData := a.portfolioCache[exchangeName]
+		if hasData {
+			balances, hasBalances := portfolioData["balances"].([]map[string]interface{})
+			if hasBalances {
+				a.writeJSON(w, map[string]interface{}{
+					"exchange": exchangeName,
+					"status":   "live_data",
+					"balances": balances,
+				})
+				return
+			}
+		}
+
+		// If no cached data, trigger refresh and return loading state
+		if exchangePID, exists := a.exchangePIDs[exchangeName]; exists {
+			ctx.Send(exchangePID, exchange.GetBalancesMsg{})
+			a.logger.Debug().
+				Str("exchange", exchangeName).
+				Msg("Triggered balance refresh")
+		}
+
 		a.writeJSON(w, map[string]interface{}{
 			"exchange": exchangeName,
-			"balances": balances,
+			"status":   "loading",
+			"balances": []interface{}{},
+			"message":  "Fetching live balance data...",
 		})
 	}
 }
@@ -367,50 +512,99 @@ func (a *APIActor) handleGetPositions(ctx *actor.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		exchangeName := chi.URLParam(r, "exchange")
 
-		// Check if portfolio is connected for this exchange
-		_, exists := a.portfolioPIDs[exchangeName]
+		// Check if exchange is connected
+		_, exists := a.exchangePIDs[exchangeName]
 		if !exists {
 			a.writeJSON(w, map[string]interface{}{
-				"error":     "Exchange portfolio not found",
+				"error":     "Exchange not found",
 				"exchange":  exchangeName,
 				"positions": []interface{}{},
 			})
 			return
 		}
 
-		// For now, return sample data to show portfolio integration is working
-		// TODO: Implement proper async request-response pattern
+		// Get cached portfolio data for this exchange
+		portfolioData, hasData := a.portfolioCache[exchangeName]
+		if hasData {
+			positions, hasPositions := portfolioData["positions"].([]map[string]interface{})
+			if hasPositions {
+				a.writeJSON(w, map[string]interface{}{
+					"exchange":  exchangeName,
+					"status":    "live_data",
+					"positions": positions,
+				})
+				return
+			}
+		}
+
+		// If no cached data, trigger refresh and return loading state
+		if exchangePID, exists := a.exchangePIDs[exchangeName]; exists {
+			ctx.Send(exchangePID, exchange.GetPositionsMsg{})
+			a.logger.Debug().
+				Str("exchange", exchangeName).
+				Msg("Triggered position refresh")
+		}
+
 		a.writeJSON(w, map[string]interface{}{
-			"exchange": exchangeName,
-			"status":   "portfolio_connected",
-			"positions": []map[string]interface{}{
-				{
-					"symbol":         "BTCUSDT",
-					"quantity":       0.5,
-					"average_price":  45000.0,
-					"current_price":  46000.0,
-					"unrealized_pnl": 500.0,
-					"side":           "long",
-				},
-			},
+			"exchange":  exchangeName,
+			"status":    "loading",
+			"positions": []interface{}{},
+			"message":   "Fetching live position data...",
 		})
 	}
 }
 
 func (a *APIActor) handleGetStrategies(ctx *actor.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// TODO: Get actual strategies from exchange actors
-		strategies := []map[string]interface{}{
-			{
-				"id":       "bybit:BTCUSDT:simple_sma",
-				"name":     "simple_sma",
-				"symbol":   "BTCUSDT",
-				"exchange": "bybit",
-				"status":   "running",
-				"pnl":      "+$125.50",
-			},
+		allStrategies := make([]map[string]interface{}, 0)
+
+		// Collect strategies from cache (populated by periodic updates from exchange actors)
+		for exchangeName, strategies := range a.strategiesCache {
+			a.logger.Debug().
+				Str("exchange", exchangeName).
+				Int("strategy_count", len(strategies)).
+				Msg("Adding strategies from cache")
+			allStrategies = append(allStrategies, strategies...)
 		}
-		a.writeJSON(w, map[string]interface{}{"strategies": strategies})
+
+		// If no cached data available, trigger a refresh and return current state
+		if len(allStrategies) == 0 && len(a.exchangePIDs) > 0 {
+			// Trigger strategy data refresh from all exchanges
+			for exchangeName, exchangePID := range a.exchangePIDs {
+				ctx.Send(exchangePID, exchange.GetStrategiesMsg{})
+				a.logger.Debug().
+					Str("exchange", exchangeName).
+					Msg("Triggered strategy refresh")
+			}
+
+			// Return a loading state since we just triggered refresh
+			allStrategies = []map[string]interface{}{
+				{
+					"id":       "system:loading",
+					"name":     "Loading Strategies",
+					"symbol":   "N/A",
+					"exchange": "system",
+					"status":   "loading",
+					"pnl":      "$0.00",
+					"note":     fmt.Sprintf("Fetching live data from %d exchange(s)...", len(a.exchangePIDs)),
+				},
+			}
+		} else if len(a.exchangePIDs) == 0 {
+			// No exchanges configured
+			allStrategies = []map[string]interface{}{
+				{
+					"id":       "system:no_exchanges",
+					"name":     "No Exchanges",
+					"symbol":   "N/A",
+					"exchange": "system",
+					"status":   "info",
+					"pnl":      "$0.00",
+					"note":     "No exchanges are currently configured",
+				},
+			}
+		}
+
+		a.writeJSON(w, map[string]interface{}{"strategies": allStrategies})
 	}
 }
 
@@ -459,18 +653,13 @@ func (a *APIActor) handleStopStrategy(ctx *actor.Context) http.HandlerFunc {
 
 func (a *APIActor) handleGetOrders(ctx *actor.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// TODO: Get actual orders from order manager
-		orders := []map[string]interface{}{
-			{
-				"id":       "order_123",
-				"symbol":   "BTCUSDT",
-				"side":     "buy",
-				"quantity": 0.01,
-				"price":    50000.0,
-				"status":   "filled",
-			},
-		}
-		a.writeJSON(w, map[string]interface{}{"orders": orders})
+		// TODO: Implement GetOrders method in exchange interface
+		// For now, return empty orders with a note about implementation status
+		a.writeJSON(w, map[string]interface{}{
+			"orders":  []interface{}{},
+			"status":  "not_implemented",
+			"message": "Order history retrieval not yet implemented",
+		})
 	}
 }
 
@@ -497,27 +686,75 @@ func (a *APIActor) handleCancelOrder(ctx *actor.Context) http.HandlerFunc {
 
 func (a *APIActor) handleGetPortfolio(ctx *actor.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Check if we have any portfolio connections
-		portfolioCount := len(a.portfolioPIDs)
+		// Aggregate portfolio data from all exchanges
+		allBalances := make([]map[string]interface{}, 0)
+		allPositions := make([]map[string]interface{}, 0)
 
-		// Enhanced portfolio data with connection status
+		connectedExchanges := len(a.exchangePIDs)
+		totalValue := 0.0
+		totalUnrealizedPnL := 0.0
+		availableCash := 0.0
+
+		// Collect data from all exchange caches
+		for exchangeName, portfolioData := range a.portfolioCache {
+			if balances, ok := portfolioData["balances"].([]map[string]interface{}); ok {
+				for _, balance := range balances {
+					// Add exchange information to balance
+					balance["exchange"] = exchangeName
+					allBalances = append(allBalances, balance)
+
+					// Calculate available cash (USDT/USD balances)
+					if asset, ok := balance["asset"].(string); ok {
+						if asset == "USDT" || asset == "USD" {
+							if available, ok := balance["available"].(float64); ok {
+								availableCash += available
+							}
+						}
+					}
+				}
+			}
+
+			if positions, ok := portfolioData["positions"].([]map[string]interface{}); ok {
+				for _, position := range positions {
+					// Add exchange information to position
+					position["exchange"] = exchangeName
+					allPositions = append(allPositions, position)
+
+					// Calculate unrealized PnL
+					if unrealizedPnl, ok := position["unrealized_pnl"].(float64); ok {
+						totalUnrealizedPnL += unrealizedPnl
+					}
+				}
+			}
+		}
+
+		// If no cached data, trigger refresh
+		if len(a.portfolioCache) == 0 && connectedExchanges > 0 {
+			for exchangeName, exchangePID := range a.exchangePIDs {
+				ctx.Send(exchangePID, exchange.GetBalancesMsg{})
+				ctx.Send(exchangePID, exchange.GetPositionsMsg{})
+				a.logger.Debug().
+					Str("exchange", exchangeName).
+					Msg("Triggered portfolio data refresh")
+			}
+		}
+
+		status := "connected"
+		if connectedExchanges == 0 {
+			status = "no_exchanges"
+		} else if len(a.portfolioCache) == 0 {
+			status = "loading"
+		}
+
 		a.writeJSON(w, map[string]interface{}{
-			"total_value":         51250.50,
-			"available_cash":      1250.50,
-			"unrealized_pnl":      125.50,
-			"realized_pnl":        500.25,
-			"connected_exchanges": portfolioCount,
-			"status":              "connected",
-			"positions": []map[string]interface{}{
-				{
-					"symbol":         "BTCUSDT",
-					"quantity":       0.5,
-					"average_price":  45000.0,
-					"current_price":  46000.0,
-					"unrealized_pnl": 500.0,
-					"exchange":       "bybit",
-				},
-			},
+			"total_value":         totalValue, // TODO: Calculate based on positions and prices
+			"available_cash":      availableCash,
+			"unrealized_pnl":      totalUnrealizedPnL,
+			"realized_pnl":        0.0, // TODO: Get from trading history
+			"connected_exchanges": connectedExchanges,
+			"status":              status,
+			"positions":           allPositions,
+			"balances":            allBalances,
 		})
 	}
 }

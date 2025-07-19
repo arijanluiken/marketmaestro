@@ -222,6 +222,19 @@ func (s *Supervisor) startExchangeActor(ctx *actor.Context, exchangeName string,
 
 	s.exchangeActors[exchangeName] = exchangeActorPID
 	s.logger.Info().Str("exchange", exchangeName).Msg("Exchange actor started successfully")
+
+	// Notify API actor about the new exchange actor
+	if s.apiActor != nil {
+		ctx.Send(s.apiActor, api.SetExchangeActorMsg{
+			Exchange:    exchangeName,
+			ExchangePID: exchangeActorPID,
+		})
+
+		// Also notify the exchange actor about the API actor
+		ctx.Send(exchangeActorPID, exchange.SetAPIActorMsg{
+			APIActorPID: s.apiActor,
+		})
+	}
 }
 
 func (s *Supervisor) onPortfolioActorCreated(ctx *actor.Context, msg exchange.PortfolioActorCreatedMsg) {

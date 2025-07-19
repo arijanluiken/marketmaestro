@@ -3,6 +3,7 @@ package exchange
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/anthdm/hollywood/actor"
@@ -29,12 +30,35 @@ type (
 	SubscribeOrderBookMsg struct{ Symbols []string }
 	GetBalancesMsg        struct{}
 	GetPositionsMsg       struct{}
+	GetStrategiesMsg      struct{}
 	StatusMsg             struct{}
 
 	// Notification messages
 	PortfolioActorCreatedMsg struct {
 		Exchange     string
 		PortfolioPID *actor.PID
+	}
+	SetAPIActorMsg struct {
+		APIActorPID *actor.PID
+	}
+
+	// Strategy data message that can be sent to API
+	StrategyDataUpdateMsg struct {
+		Exchange   string
+		Strategies []map[string]interface{}
+	}
+
+	// Portfolio data message that can be sent to API
+	PortfolioDataUpdateMsg struct {
+		Exchange  string
+		Balances  []map[string]interface{}
+		Positions []map[string]interface{}
+	}
+
+	// Orders data message that can be sent to API
+	OrdersDataUpdateMsg struct {
+		Exchange string
+		Orders   []map[string]interface{}
 	}
 
 	// Data messages
@@ -60,6 +84,7 @@ type ExchangeActor struct {
 	riskManagerPID  *actor.PID
 	portfolioPID    *actor.PID
 	settingsPID     *actor.PID
+	apiActorPID     *actor.PID
 
 	// State
 	connected            bool
@@ -107,6 +132,8 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onGetBalances(ctx)
 	case GetPositionsMsg:
 		e.onGetPositions(ctx)
+	case GetStrategiesMsg:
+		e.onGetStrategies(ctx)
 	case StatusMsg:
 		e.onStatus(ctx)
 	case KlineDataMsg:
@@ -118,6 +145,8 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onPortfolioRequestBalances(ctx)
 	case portfolio.GetPositionsMsg:
 		e.onPortfolioRequestPositions(ctx)
+	case SetAPIActorMsg:
+		e.onSetAPIActor(ctx, msg)
 	default:
 		e.logger.Warn().
 			Str("message_type", fmt.Sprintf("%T", msg)).
@@ -454,12 +483,15 @@ func (e *ExchangeActor) OnTicker(ticker *exchanges.Ticker) {
 }
 
 func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
+	e.logger.Debug().Bool("connected", e.connected).Msg("GetBalances request received")
+	
 	if !e.connected {
 		e.logger.Error().Msg("Cannot get balances: not connected")
 		ctx.Respond(fmt.Errorf("not connected"))
 		return
 	}
 
+	e.logger.Info().Msg("Fetching balances from exchange")
 	balanceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -469,6 +501,8 @@ func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
 		ctx.Respond(err)
 		return
 	}
+
+	e.logger.Info().Int("balance_count", len(balances)).Msg("Successfully retrieved balances")
 
 	// Send response to requester
 	ctx.Respond(balances)
@@ -483,6 +517,23 @@ func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
 			}
 			ctx.Send(e.portfolioPID, portfolioMsg)
 		}
+	}
+
+	// Convert balances to map format for API
+	balanceData := make([]map[string]interface{}, len(balances))
+	for i, balance := range balances {
+		balanceData[i] = map[string]interface{}{
+			"asset":     balance.Asset,
+			"total":     balance.Total,
+			"available": balance.Available,
+			"locked":    balance.Locked,
+		}
+	}
+
+	// Send balance data to API actor if available
+	if e.apiActorPID != nil {
+		// Get current positions to send combined portfolio data
+		e.sendPortfolioDataToAPI(ctx, balanceData, nil)
 	}
 }
 
@@ -518,6 +569,72 @@ func (e *ExchangeActor) onGetPositions(ctx *actor.Context) {
 			}
 			ctx.Send(e.portfolioPID, portfolioMsg)
 		}
+	}
+
+	// Convert positions to map format for API
+	positionData := make([]map[string]interface{}, len(positions))
+	for i, position := range positions {
+		positionData[i] = map[string]interface{}{
+			"symbol":         position.Symbol,
+			"size":           position.Size,
+			"side":           position.Side,
+			"entry_price":    position.EntryPrice,
+			"mark_price":     position.MarkPrice,
+			"unrealized_pnl": position.UnrealizedPL,
+		}
+	}
+
+	// Send position data to API actor if available
+	if e.apiActorPID != nil {
+		e.sendPortfolioDataToAPI(ctx, nil, positionData)
+	}
+}
+
+func (e *ExchangeActor) onGetStrategies(ctx *actor.Context) {
+	strategies := make([]map[string]interface{}, 0)
+
+	// Collect strategy information from all strategy actors
+	for strategyKey, strategyPID := range e.strategyActors {
+		// Parse strategy key to extract strategy name and symbol
+		// Format: "strategyName:symbol"
+		parts := strings.Split(strategyKey, ":")
+		if len(parts) != 2 {
+			continue
+		}
+
+		strategyName := parts[0]
+		symbol := parts[1]
+
+		// Create strategy info - for now we assume all tracked strategies are running
+		// TODO: Add proper status tracking and PnL calculation
+		strategyInfo := map[string]interface{}{
+			"id":       fmt.Sprintf("%s:%s:%s", e.exchangeName, symbol, strategyName),
+			"name":     strategyName,
+			"symbol":   symbol,
+			"exchange": e.exchangeName,
+			"status":   "running", // Since we only track active strategy PIDs
+			"pnl":      "$0.00",   // TODO: Calculate actual PnL from trades/positions
+		}
+
+		// Check if PID is still valid (actor still running)
+		if strategyPID != nil {
+			strategies = append(strategies, strategyInfo)
+		}
+	}
+
+	// Respond to the caller (could be API or other actor)
+	ctx.Respond(map[string]interface{}{"strategies": strategies})
+
+	// Also send update to API actor if available
+	if e.apiActorPID != nil {
+		ctx.Send(e.apiActorPID, StrategyDataUpdateMsg{
+			Exchange:   e.exchangeName,
+			Strategies: strategies,
+		})
+		e.logger.Debug().
+			Str("exchange", e.exchangeName).
+			Int("strategy_count", len(strategies)).
+			Msg("Sent strategy data to API actor")
 	}
 }
 
@@ -687,4 +804,41 @@ func (e *ExchangeActor) onPortfolioRequestPositions(ctx *actor.Context) {
 			e.logger.Info().Msg("No active positions found")
 		}
 	}
+}
+
+func (e *ExchangeActor) onSetAPIActor(ctx *actor.Context, msg SetAPIActorMsg) {
+	e.apiActorPID = msg.APIActorPID
+	e.logger.Info().Msg("API actor reference set")
+}
+
+// sendPortfolioDataToAPI sends portfolio data (balances and positions) to the API actor
+func (e *ExchangeActor) sendPortfolioDataToAPI(ctx *actor.Context, balances []map[string]interface{}, positions []map[string]interface{}) {
+	if e.apiActorPID == nil {
+		return
+	}
+
+	// If we only have balances or positions, send what we have
+	// The API will merge data as needed
+	portfolioMsg := PortfolioDataUpdateMsg{
+		Exchange:  e.exchangeName,
+		Balances:  balances,
+		Positions: positions,
+	}
+
+	ctx.Send(e.apiActorPID, portfolioMsg)
+
+	balanceCount := 0
+	positionCount := 0
+	if balances != nil {
+		balanceCount = len(balances)
+	}
+	if positions != nil {
+		positionCount = len(positions)
+	}
+
+	e.logger.Debug().
+		Str("exchange", e.exchangeName).
+		Int("balance_count", balanceCount).
+		Int("position_count", positionCount).
+		Msg("Sent portfolio data to API actor")
 }

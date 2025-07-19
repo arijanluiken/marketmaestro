@@ -189,8 +189,8 @@ func (p *PortfolioActor) onStarted(ctx *actor.Context) {
 		Str("exchange", p.exchangeName).
 		Msg("Portfolio actor started")
 
-	// Initialize with sample data for development
-	p.initializeSampleData()
+	// Initialize with real data from exchange
+	p.onSyncWithExchange(ctx)
 
 	// Start periodic portfolio updates
 	p.schedulePeriodicUpdates(ctx)
@@ -634,46 +634,4 @@ func (p *PortfolioActor) updateDailyPnL() {
 		Str("date", today).
 		Float64("pnl", unrealizedPnL).
 		Msg("Daily PnL updated")
-}
-
-func (p *PortfolioActor) initializeSampleData() {
-	// Initialize sample balances
-	p.balances[fmt.Sprintf("%s:USDT", p.exchangeName)] = &Balance{
-		Exchange:  p.exchangeName,
-		Asset:     "USDT",
-		Available: 50000.0,
-		Locked:    0.0,
-		Total:     50000.0,
-		UpdatedAt: time.Now(),
-	}
-
-	p.balances[fmt.Sprintf("%s:BTC", p.exchangeName)] = &Balance{
-		Exchange:  p.exchangeName,
-		Asset:     "BTC",
-		Available: 1.0,
-		Locked:    0.0,
-		Total:     1.0,
-		UpdatedAt: time.Now(),
-	}
-
-	// Initialize sample position
-	p.positions[fmt.Sprintf("%s:BTCUSDT", p.exchangeName)] = &Position{
-		Exchange:      p.exchangeName,
-		Symbol:        "BTCUSDT",
-		Quantity:      0.5,
-		AveragePrice:  45000.0,
-		CurrentPrice:  46000.0,
-		UnrealizedPnL: 500.0,
-		UpdatedAt:     time.Now(),
-	}
-
-	// Initialize sample PnL history
-	for i := 0; i < 30; i++ {
-		date := time.Now().AddDate(0, 0, -i).Format("2006-01-02")
-		p.pnlHistory[date] = float64(i*10 + 50) // Sample increasing PnL
-	}
-
-	p.logger.Info().
-		Str("exchange", p.exchangeName).
-		Msg("Sample portfolio data initialized")
 }

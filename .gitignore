@@ -9,7 +9,7 @@
 *.dylib
 bin/
 dist/
-
+mercantile
 # Test binary, built with `go test -c`
 *.test
 

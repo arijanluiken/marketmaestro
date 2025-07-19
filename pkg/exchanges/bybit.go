@@ -631,33 +631,57 @@ func (b *BybitExchange) convertV5OrderToOrder(v5Order *bybit.V5GetOrder) *Order 
 
 // GetBalances retrieves account balances
 func (b *BybitExchange) GetBalances(ctx context.Context) ([]*Balance, error) {
-	// Use UNIFIED account type for V5 API (SPOT is deprecated)
+	var allBalances []*Balance
+
+	// Try UNIFIED account type first (recommended for V5 API)
 	resp, err := b.client.V5().Account().GetWalletBalance(bybit.AccountTypeV5("UNIFIED"), nil)
 	if err != nil {
-		b.logger.Error().Err(err).Msg("Failed to get wallet balance")
-		return nil, fmt.Errorf("failed to get wallet balance: %w", err)
-	}
+		b.logger.Error().Err(err).Msg("Failed to get UNIFIED wallet balance")
+	} else {
+		b.logger.Info().Int("accounts", len(resp.Result.List)).Msg("Retrieved UNIFIED wallet balance")
+		for _, account := range resp.Result.List {
+			b.logger.Info().
+				Str("account_type", string(account.AccountType)).
+				Int("coins", len(account.Coin)).
+				Msg("Processing account")
 
-	var balances []*Balance
-	for _, account := range resp.Result.List {
-		for _, coin := range account.Coin {
-			available, _ := strconv.ParseFloat(coin.Free, 64)
-			locked, _ := strconv.ParseFloat(coin.Locked, 64)
-			total, _ := strconv.ParseFloat(coin.WalletBalance, 64)
+			for _, coin := range account.Coin {
+				// Parse balance fields - handle cases where Free might be empty
+				available, _ := strconv.ParseFloat(coin.Free, 64)
+				locked, _ := strconv.ParseFloat(coin.Locked, 64)
+				total, _ := strconv.ParseFloat(coin.WalletBalance, 64)
 
-			balances = append(balances, &Balance{
-				Asset:     string(coin.Coin),
-				Available: available,
-				Locked:    locked,
-				Total:     total,
-			})
+				// If Free is empty but WalletBalance has value, use WalletBalance as available
+				// This happens in UNIFIED accounts where funds might not be explicitly "free"
+				if available == 0 && total > 0 {
+					available = total - locked
+				}
+
+				// Only include balances that have actual funds
+				if total > 0 {
+					b.logger.Info().
+						Str("asset", string(coin.Coin)).
+						Float64("total", total).
+						Float64("available", available).
+						Float64("locked", locked).
+						Str("raw_free", coin.Free).
+						Str("raw_wallet", coin.WalletBalance).
+						Msg("Found balance")
+
+					allBalances = append(allBalances, &Balance{
+						Asset:     string(coin.Coin),
+						Available: available,
+						Locked:    locked,
+						Total:     total,
+					})
+				}
+			}
 		}
 	}
 
-	return balances, nil
-}
-
-// GetPositions retrieves account positions (not applicable for spot trading)
+	b.logger.Info().Int("total_balances", len(allBalances)).Msg("GetBalances completed")
+	return allBalances, nil
+}// GetPositions retrieves account positions (not applicable for spot trading)
 func (b *BybitExchange) GetPositions(ctx context.Context) ([]*Position, error) {
 	// Spot trading doesn't have positions in the traditional sense
 	return []*Position{}, nil

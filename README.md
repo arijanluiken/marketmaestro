@@ -8,7 +8,7 @@ An advanced cryptocurrency trading bot built in Go using the actor model with th
 - **Multi-Exchange Support**: Abstract interface with implementations for Bybit and Bitvavo
 - **REST API**: Full-featured API with OpenAPI specification
 - **Web Interface**: Modern, responsive UI built with Pure CSS
-- **Strategy Engine**: Designed for Starlark-based trading strategies
+- **Strategy Engine**: Starlark-based trading strategies with 25+ technical indicators
 - **Risk Management**: Built-in risk management and portfolio tracking
 - **Database Integration**: SQLite with automated migrations
 - **Configuration Management**: Environment variables and YAML configuration
@@ -99,10 +99,16 @@ logging:
 
 🚧 **In Progress:**
 - WebSocket data feeds
-- Starlark strategy engine
 - Complete exchange implementations
 - Advanced order types
 - Real-time portfolio tracking
+
+✅ **Strategy Engine Features:**
+- Starlark-based scripting (Python-like syntax)
+- 25+ technical indicators (SMA, EMA, RSI, MACD, Bollinger, ADX, Ichimoku, etc.)
+- Event-driven callbacks (kline, orderbook, ticker)
+- Risk management and position sizing
+- Real-time market data access
 
 ## API Endpoints
 
@@ -111,6 +117,12 @@ logging:
 - `GET /api/v1/exchanges` - List configured exchanges
 - `GET /api/v1/strategies` - List trading strategies
 - More endpoints documented in the OpenAPI spec
+
+## Documentation
+
+- **[Strategy Engine Documentation](docs/strategy-engine.md)** - Comprehensive guide to writing trading strategies
+- **[Indicators Documentation](INDICATORS_DOCUMENTATION.md)** - Technical indicators reference
+- **[Enhanced Order Management](ENHANCED_ORDER_MANAGEMENT.md)** - Order management features
 
 ## License
 

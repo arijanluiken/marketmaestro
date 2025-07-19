@@ -1,0 +1,14 @@
+# Mercantile Trading Bot Configuration
+
+database:
+  path: "./mercantile.db"
+
+api:
+  port: 8080
+  timeout: 30s
+
+ui:
+  port: 8081
+
+logging:
+  level: "info"

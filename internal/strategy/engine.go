@@ -106,25 +106,34 @@ func (se *StrategyEngine) setupBuiltins() {
 			}),
 		}),
 		// Technical Indicators
-		"sma":         starlark.NewBuiltin("sma", se.sma),
-		"ema":         starlark.NewBuiltin("ema", se.ema),
-		"rsi":         starlark.NewBuiltin("rsi", se.rsi),
-		"macd":        starlark.NewBuiltin("macd", se.macd),
-		"bollinger":   starlark.NewBuiltin("bollinger", se.bollinger),
-		"stochastic":  starlark.NewBuiltin("stochastic", se.stochastic),
-		"williams_r":  starlark.NewBuiltin("williams_r", se.williamsR),
-		"atr":         starlark.NewBuiltin("atr", se.atr),
-		"cci":         starlark.NewBuiltin("cci", se.cci),
-		"vwap":        starlark.NewBuiltin("vwap", se.vwap),
-		"mfi":         starlark.NewBuiltin("mfi", se.mfi),
-		"stddev":      starlark.NewBuiltin("stddev", se.stddev),
-		"roc":         starlark.NewBuiltin("roc", se.roc),
+		"sma":        starlark.NewBuiltin("sma", se.sma),
+		"ema":        starlark.NewBuiltin("ema", se.ema),
+		"rsi":        starlark.NewBuiltin("rsi", se.rsi),
+		"macd":       starlark.NewBuiltin("macd", se.macd),
+		"bollinger":  starlark.NewBuiltin("bollinger", se.bollinger),
+		"stochastic": starlark.NewBuiltin("stochastic", se.stochastic),
+		"williams_r": starlark.NewBuiltin("williams_r", se.williamsR),
+		"atr":        starlark.NewBuiltin("atr", se.atr),
+		"cci":        starlark.NewBuiltin("cci", se.cci),
+		"vwap":       starlark.NewBuiltin("vwap", se.vwap),
+		"mfi":        starlark.NewBuiltin("mfi", se.mfi),
+		"stddev":     starlark.NewBuiltin("stddev", se.stddev),
+		"roc":        starlark.NewBuiltin("roc", se.roc),
+		// New Advanced Indicators
+		"obv":           starlark.NewBuiltin("obv", se.obv),
+		"adx":           starlark.NewBuiltin("adx", se.adx),
+		"parabolic_sar": starlark.NewBuiltin("parabolic_sar", se.parabolicSAR),
+		"keltner":       starlark.NewBuiltin("keltner", se.keltner),
+		"ichimoku":      starlark.NewBuiltin("ichimoku", se.ichimoku),
+		"pivot_points":  starlark.NewBuiltin("pivot_points", se.pivotPoints),
+		"fibonacci":     starlark.NewBuiltin("fibonacci", se.fibonacci),
+		"aroon":         starlark.NewBuiltin("aroon", se.aroon),
 		// Utility functions
-		"highest":     starlark.NewBuiltin("highest", se.highest),
-		"lowest":      starlark.NewBuiltin("lowest", se.lowest),
-		"crossover":   starlark.NewBuiltin("crossover", se.crossover),
-		"crossunder":  starlark.NewBuiltin("crossunder", se.crossunder),
-		"log":         starlark.NewBuiltin("log", se.logFunc),
+		"highest":    starlark.NewBuiltin("highest", se.highest),
+		"lowest":     starlark.NewBuiltin("lowest", se.lowest),
+		"crossover":  starlark.NewBuiltin("crossover", se.crossover),
+		"crossunder": starlark.NewBuiltin("crossunder", se.crossunder),
+		"log":        starlark.NewBuiltin("log", se.logFunc),
 	}
 }
 
@@ -969,6 +978,316 @@ func (se *StrategyEngine) roc(thread *starlark.Thread, fn *starlark.Builtin, arg
 
 	result := se.indicators.calculateROC(priceList, int(periodInt))
 	return se.floatListToStarlark(result), nil
+}
+
+// obv calculates On-Balance Volume
+func (se *StrategyEngine) obv(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var close, volume starlark.Value
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "close", &close, "volume", &volume); err != nil {
+		return nil, err
+	}
+
+	closeList, ok := close.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("close must be a list")
+	}
+
+	volumeList, ok := volume.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("volume must be a list")
+	}
+
+	result := se.indicators.calculateOBV(closeList, volumeList)
+	return se.floatListToStarlark(result), nil
+}
+
+// adx calculates Average Directional Index
+func (se *StrategyEngine) adx(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "period", &period); err != nil {
+		return nil, err
+	}
+
+	highList, ok := high.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("high must be a list")
+	}
+
+	lowList, ok := low.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("low must be a list")
+	}
+
+	closeList, ok := close.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("close must be a list")
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt <= 0 {
+		return nil, fmt.Errorf("period must be positive")
+	}
+
+	adxResult, plusDI, minusDI := se.indicators.calculateADX(highList, lowList, closeList, int(periodInt))
+
+	// Return as a dict with adx, plus_di, minus_di
+	result := starlark.NewDict(3)
+	result.SetKey(starlark.String("adx"), se.floatListToStarlark(adxResult))
+	result.SetKey(starlark.String("plus_di"), se.floatListToStarlark(plusDI))
+	result.SetKey(starlark.String("minus_di"), se.floatListToStarlark(minusDI))
+
+	return result, nil
+}
+
+// parabolicSAR calculates Parabolic Stop and Reverse
+func (se *StrategyEngine) parabolicSAR(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low starlark.Value
+	var step, maxStep starlark.Float
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "step?", &step, "max_step?", &maxStep); err != nil {
+		return nil, err
+	}
+
+	highList, ok := high.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("high must be a list")
+	}
+
+	lowList, ok := low.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("low must be a list")
+	}
+
+	stepVal := 0.02 // Default step
+	if step != 0 {
+		stepVal = float64(step)
+	}
+
+	maxStepVal := 0.2 // Default max step
+	if maxStep != 0 {
+		maxStepVal = float64(maxStep)
+	}
+
+	result := se.indicators.calculateParabolicSAR(highList, lowList, stepVal, maxStepVal)
+	return se.floatListToStarlark(result), nil
+}
+
+// keltner calculates Keltner Channels
+func (se *StrategyEngine) keltner(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close starlark.Value
+	var period starlark.Int
+	var multiplier starlark.Float
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "period", &period, "multiplier?", &multiplier); err != nil {
+		return nil, err
+	}
+
+	highList, ok := high.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("high must be a list")
+	}
+
+	lowList, ok := low.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("low must be a list")
+	}
+
+	closeList, ok := close.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("close must be a list")
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt <= 0 {
+		return nil, fmt.Errorf("period must be positive")
+	}
+
+	multVal := 2.0 // Default multiplier
+	if multiplier != 0 {
+		multVal = float64(multiplier)
+	}
+
+	upper, middle, lower := se.indicators.calculateKeltnerChannels(highList, lowList, closeList, int(periodInt), multVal)
+
+	// Return as a dict with upper, middle, lower
+	result := starlark.NewDict(3)
+	result.SetKey(starlark.String("upper"), se.floatListToStarlark(upper))
+	result.SetKey(starlark.String("middle"), se.floatListToStarlark(middle))
+	result.SetKey(starlark.String("lower"), se.floatListToStarlark(lower))
+
+	return result, nil
+}
+
+// ichimoku calculates Ichimoku Cloud components
+func (se *StrategyEngine) ichimoku(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if args.Len() < 3 {
+		return nil, fmt.Errorf("ichimoku requires at least 3 arguments: high, low, close")
+	}
+
+	high := args.Index(0)
+	low := args.Index(1)
+	close := args.Index(2)
+
+	// Optional parameters with defaults
+	convPeriod := 9
+	basePer := 26
+	spanBPer := 52
+	disp := 26
+
+	// Parse optional kwargs
+	for _, kw := range kwargs {
+		name := string(kw[0].(starlark.String))
+		switch name {
+		case "conversion_period":
+			if val, ok := kw[1].(starlark.Int); ok {
+				v, _ := val.Int64()
+				convPeriod = int(v)
+			}
+		case "base_period":
+			if val, ok := kw[1].(starlark.Int); ok {
+				v, _ := val.Int64()
+				basePer = int(v)
+			}
+		case "span_b_period":
+			if val, ok := kw[1].(starlark.Int); ok {
+				v, _ := val.Int64()
+				spanBPer = int(v)
+			}
+		case "displacement":
+			if val, ok := kw[1].(starlark.Int); ok {
+				v, _ := val.Int64()
+				disp = int(v)
+			}
+		}
+	}
+
+	highList, ok := high.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("high must be a list")
+	}
+
+	lowList, ok := low.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("low must be a list")
+	}
+
+	closeList, ok := close.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("close must be a list")
+	}
+
+	tenkan, kijun, senkouA, senkouB, chikou := se.indicators.calculateIchimoku(highList, lowList, closeList, convPeriod, basePer, spanBPer, disp)
+
+	// Return as a dict with all components
+	result := starlark.NewDict(5)
+	result.SetKey(starlark.String("tenkan_sen"), se.floatListToStarlark(tenkan))
+	result.SetKey(starlark.String("kijun_sen"), se.floatListToStarlark(kijun))
+	result.SetKey(starlark.String("senkou_span_a"), se.floatListToStarlark(senkouA))
+	result.SetKey(starlark.String("senkou_span_b"), se.floatListToStarlark(senkouB))
+	result.SetKey(starlark.String("chikou_span"), se.floatListToStarlark(chikou))
+
+	return result, nil
+}
+
+// pivotPoints calculates Pivot Points and support/resistance levels
+func (se *StrategyEngine) pivotPoints(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close starlark.Value
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close); err != nil {
+		return nil, err
+	}
+
+	highList, ok := high.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("high must be a list")
+	}
+
+	lowList, ok := low.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("low must be a list")
+	}
+
+	closeList, ok := close.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("close must be a list")
+	}
+
+	pivot, r1, r2, r3, s1, s2, s3 := se.indicators.calculatePivotPoints(highList, lowList, closeList)
+
+	// Return as a dict with all levels
+	result := starlark.NewDict(7)
+	result.SetKey(starlark.String("pivot"), se.floatListToStarlark(pivot))
+	result.SetKey(starlark.String("r1"), se.floatListToStarlark(r1))
+	result.SetKey(starlark.String("r2"), se.floatListToStarlark(r2))
+	result.SetKey(starlark.String("r3"), se.floatListToStarlark(r3))
+	result.SetKey(starlark.String("s1"), se.floatListToStarlark(s1))
+	result.SetKey(starlark.String("s2"), se.floatListToStarlark(s2))
+	result.SetKey(starlark.String("s3"), se.floatListToStarlark(s3))
+
+	return result, nil
+}
+
+// fibonacci calculates Fibonacci retracement levels
+func (se *StrategyEngine) fibonacci(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low starlark.Float
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low); err != nil {
+		return nil, err
+	}
+
+	highVal := float64(high)
+	lowVal := float64(low)
+
+	if highVal <= lowVal {
+		return nil, fmt.Errorf("high must be greater than low")
+	}
+
+	levels := se.indicators.calculateFibonacciRetracement(highVal, lowVal)
+
+	// Return as a dict with all levels
+	result := starlark.NewDict(len(levels))
+	for level, value := range levels {
+		result.SetKey(starlark.String(level), starlark.Float(value))
+	}
+
+	return result, nil
+}
+
+// aroon calculates Aroon Up and Aroon Down
+func (se *StrategyEngine) aroon(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "period", &period); err != nil {
+		return nil, err
+	}
+
+	highList, ok := high.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("high must be a list")
+	}
+
+	lowList, ok := low.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("low must be a list")
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt <= 0 {
+		return nil, fmt.Errorf("period must be positive")
+	}
+
+	aroonUp, aroonDown := se.indicators.calculateAroon(highList, lowList, int(periodInt))
+
+	// Return as a dict with aroon_up and aroon_down
+	result := starlark.NewDict(2)
+	result.SetKey(starlark.String("aroon_up"), se.floatListToStarlark(aroonUp))
+	result.SetKey(starlark.String("aroon_down"), se.floatListToStarlark(aroonDown))
+
+	return result, nil
 }
 
 // Helper functions for data conversion

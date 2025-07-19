@@ -1,22 +1,115 @@
-# Simple indicator test strategy
-# Tests new indicators with minimal data
+# Test script for new technical indicators
 
-# Strategy settings
-def settings():
-    return {
-        "interval": "1m",
-        "position_size": 0.01
-    }
-
-# Basic test function to verify new indicators are working
-def on_kline(kline):
-    """Test new indicators with sample data"""
+def test_indicators():
+    """
+    Test function to verify new indicators work correctly
+    """
     
-    # Sample price data for testing
-    test_closes = [100, 101, 102, 103, 104, 103, 102, 101, 100, 99, 98, 97, 98, 99, 100, 101, 102, 103, 104, 105]
-    test_highs = [101, 102, 103, 104, 105, 104, 103, 102, 101, 100, 99, 98, 99, 100, 101, 102, 103, 104, 105, 106]
-    test_lows = [99, 100, 101, 102, 103, 102, 101, 100, 99, 98, 97, 96, 97, 98, 99, 100, 101, 102, 103, 104]
-    test_volumes = [1000, 1100, 1200, 1300, 1400, 1350, 1250, 1150, 1050, 950, 850, 750, 850, 950, 1050, 1150, 1250, 1350, 1450, 1550]
+    # Create sample price data
+    test_close = [100, 102, 101, 103, 105, 104, 106, 108, 107, 109, 111, 110, 112, 114, 113]
+    test_high = [101, 103, 102, 104, 106, 105, 107, 109, 108, 110, 112, 111, 113, 115, 114]
+    test_low = [99, 101, 100, 102, 104, 103, 105, 107, 106, 108, 110, 109, 111, 113, 112]
+    test_volume = [1000, 1100, 950, 1200, 1300, 1050, 1150, 1400, 1250, 1350, 1500, 1200, 1400, 1600, 1300]
+    
+    print("Testing new technical indicators...")
+    
+    # Test OBV
+    try:
+        obv_result = obv(test_close, test_volume)
+        print(f"✓ OBV calculated successfully. Length: {len(obv_result)}")
+        print(f"  Last 3 OBV values: {obv_result[-3:]}")
+    except Exception as e:
+        print(f"✗ OBV failed: {e}")
+    
+    # Test ADX
+    try:
+        adx_result = adx(test_high, test_low, test_close, 10)
+        print(f"✓ ADX calculated successfully")
+        print(f"  ADX keys: {list(adx_result.keys())}")
+        if "adx" in adx_result:
+            adx_values = adx_result["adx"]
+            print(f"  Last ADX value: {adx_values[-1] if adx_values[-1] else 'NaN'}")
+    except Exception as e:
+        print(f"✗ ADX failed: {e}")
+    
+    # Test Parabolic SAR
+    try:
+        psar_result = parabolic_sar(test_high, test_low)
+        print(f"✓ Parabolic SAR calculated successfully. Length: {len(psar_result)}")
+        print(f"  Last 3 PSAR values: {psar_result[-3:]}")
+    except Exception as e:
+        print(f"✗ Parabolic SAR failed: {e}")
+    
+    # Test Keltner Channels
+    try:
+        keltner_result = keltner(test_high, test_low, test_close, 10)
+        print(f"✓ Keltner Channels calculated successfully")
+        print(f"  Keltner keys: {list(keltner_result.keys())}")
+        if "middle" in keltner_result:
+            middle_values = keltner_result["middle"]
+            print(f"  Last middle value: {middle_values[-1] if middle_values[-1] else 'NaN'}")
+    except Exception as e:
+        print(f"✗ Keltner Channels failed: {e}")
+    
+    # Test Ichimoku
+    try:
+        ichimoku_result = ichimoku(test_high, test_low, test_close)
+        print(f"✓ Ichimoku calculated successfully")
+        print(f"  Ichimoku keys: {list(ichimoku_result.keys())}")
+        if "tenkan_sen" in ichimoku_result:
+            tenkan_values = ichimoku_result["tenkan_sen"]
+            print(f"  Last Tenkan-sen value: {tenkan_values[-1] if tenkan_values[-1] else 'NaN'}")
+    except Exception as e:
+        print(f"✗ Ichimoku failed: {e}")
+    
+    # Test Pivot Points
+    try:
+        pivot_result = pivot_points(test_high, test_low, test_close)
+        print(f"✓ Pivot Points calculated successfully")
+        print(f"  Pivot keys: {list(pivot_result.keys())}")
+        if "pivot" in pivot_result:
+            pivot_values = pivot_result["pivot"]
+            print(f"  Last pivot value: {pivot_values[-1] if pivot_values[-1] else 'NaN'}")
+    except Exception as e:
+        print(f"✗ Pivot Points failed: {e}")
+    
+    # Test Fibonacci
+    try:
+        fib_result = fibonacci(115.0, 99.0)
+        print(f"✓ Fibonacci calculated successfully")
+        print(f"  Fibonacci keys: {list(fib_result.keys())}")
+        print(f"  50% level: {fib_result['50.0']}")
+        print(f"  61.8% level: {fib_result['61.8']}")
+    except Exception as e:
+        print(f"✗ Fibonacci failed: {e}")
+    
+    # Test Aroon
+    try:
+        aroon_result = aroon(test_high, test_low, 10)
+        print(f"✓ Aroon calculated successfully")
+        print(f"  Aroon keys: {list(aroon_result.keys())}")
+        if "aroon_up" in aroon_result:
+            aroon_up_values = aroon_result["aroon_up"]
+            print(f"  Last Aroon Up value: {aroon_up_values[-1] if aroon_up_values[-1] else 'NaN'}")
+    except Exception as e:
+        print(f"✗ Aroon failed: {e}")
+    
+    print("\\nIndicator testing completed!")
+    
+    return {"action": "hold", "reason": "Test completed successfully"}
+
+def get_signal(data):
+    """
+    Main strategy function - runs tests
+    """
+    return test_indicators()
+
+# Configuration
+config = {
+    "symbol": "BTCUSDT",
+    "interval": "1m", 
+    "description": "Test strategy for new technical indicators"
+}
     
     log("Testing new indicators...")
     

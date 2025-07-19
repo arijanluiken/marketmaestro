@@ -93,6 +93,8 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onStarted(ctx)
 	case actor.Stopped:
 		e.onStopped(ctx)
+	case actor.Initialized:
+		e.onInitialized(ctx)
 	case ConnectMessage:
 		e.onConnect(ctx)
 	case DisconnectMessage:
@@ -137,6 +139,10 @@ func (e *ExchangeActor) onStarted(ctx *actor.Context) {
 
 	// Start configured strategies
 	e.startConfiguredStrategies(ctx)
+}
+
+func (e *ExchangeActor) onInitialized(ctx *actor.Context) {
+	e.logger.Debug().Str("exchange", e.exchangeName).Msg("Exchange actor initialized")
 }
 
 func (e *ExchangeActor) startConfiguredStrategies(ctx *actor.Context) {
@@ -368,10 +374,9 @@ func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
 		Msg("Received kline data")
 
 	// Broadcast to all strategy actors using the actor system
-	msg := KlineDataMsg{Kline: kline}
 	for _, strategyPID := range e.strategyActors {
 		if strategyPID != nil && e.actorSystem != nil {
-			e.actorSystem.Send(strategyPID, msg)
+			e.actorSystem.Send(strategyPID, strategy.KlineDataMsg{Kline: kline})
 		}
 	}
 
@@ -407,10 +412,9 @@ func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
 	}
 
 	// Broadcast to strategy actors using the actor system
-	msg := OrderBookDataMsg{OrderBook: orderBook}
 	for _, strategyPID := range e.strategyActors {
 		if strategyPID != nil && e.actorSystem != nil {
-			e.actorSystem.Send(strategyPID, msg)
+			e.actorSystem.Send(strategyPID, strategy.OrderBookDataMsg{OrderBook: orderBook})
 		}
 	}
 

@@ -465,7 +465,7 @@ func (b *BybitExchange) UnsubscribeOrderBook(symbols []string) error {
 	return nil
 }
 
-// PlaceOrder places a trading order (simplified for testnet)
+// PlaceOrder places a trading order using Bybit V5 API
 func (b *BybitExchange) PlaceOrder(ctx context.Context, order *Order) (*Order, error) {
 	b.logger.Info().
 		Str("symbol", order.Symbol).
@@ -475,9 +475,42 @@ func (b *BybitExchange) PlaceOrder(ctx context.Context, order *Order) (*Order, e
 		Float64("price", order.Price).
 		Msg("Placing order")
 
-	// For now, return a mock order since full integration requires proper API setup
+	// Convert our order type to Bybit format
+	orderType := bybit.OrderTypeLimit
+	if order.Type == "market" {
+		orderType = bybit.OrderTypeMarket
+	}
+
+	side := bybit.SideBuy
+	if order.Side == "sell" {
+		side = bybit.SideSell
+	}
+
+	// Prepare order request parameters
+	param := bybit.V5CreateOrderParam{
+		Category:  bybit.CategoryV5Spot,
+		Symbol:    bybit.SymbolV5(order.Symbol),
+		Side:      side,
+		OrderType: orderType,
+		Qty:       fmt.Sprintf("%.8f", order.Quantity),
+	}
+
+	// Add price for limit orders
+	if order.Type == "limit" {
+		priceStr := fmt.Sprintf("%.8f", order.Price)
+		param.Price = &priceStr
+	}
+
+	// Use the V5 Order service to place the order
+	response, err := b.client.V5().Order().CreateOrder(param)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("Failed to place order")
+		return nil, fmt.Errorf("failed to place order: %w", err)
+	}
+
+	// Return the created order
 	return &Order{
-		ID:       fmt.Sprintf("bybit_%d", time.Now().Unix()),
+		ID:       response.Result.OrderID,
 		Symbol:   order.Symbol,
 		Side:     order.Side,
 		Type:     order.Type,
@@ -495,48 +528,133 @@ func (b *BybitExchange) CancelOrder(ctx context.Context, symbol, orderID string)
 		Str("order_id", orderID).
 		Msg("Cancelling order")
 
-	// Mock implementation
+	param := bybit.V5CancelOrderParam{
+		Category: bybit.CategoryV5Spot,
+		Symbol:   bybit.SymbolV5(symbol),
+		OrderID:  &orderID,
+	}
+
+	_, err := b.client.V5().Order().CancelOrder(param)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("Failed to cancel order")
+		return fmt.Errorf("failed to cancel order: %w", err)
+	}
+
 	return nil
 }
 
 // GetOrder retrieves order information
 func (b *BybitExchange) GetOrder(ctx context.Context, symbol, orderID string) (*Order, error) {
-	// Mock implementation
-	return &Order{
-		ID:       orderID,
-		Symbol:   symbol,
-		Side:     "buy",
-		Type:     "limit",
-		Quantity: 1.0,
-		Price:    50000.0,
-		Status:   "filled",
-		Time:     time.Now(),
-	}, nil
+	// Use GetOpenOrders with orderID filter to get specific order
+	param := bybit.V5GetOpenOrdersParam{
+		Category: bybit.CategoryV5Spot,
+		Symbol:   (*bybit.SymbolV5)(&symbol),
+		OrderID:  &orderID,
+	}
+
+	resp, err := b.client.V5().Order().GetOpenOrders(param)
+	if err != nil {
+		// Try history orders if not found in open orders
+		historyParam := bybit.V5GetHistoryOrdersParam{
+			Category: bybit.CategoryV5Spot,
+			Symbol:   (*bybit.SymbolV5)(&symbol),
+			OrderID:  &orderID,
+		}
+
+		resp, err = b.client.V5().Order().GetHistoryOrders(historyParam)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get order: %w", err)
+		}
+	}
+
+	if len(resp.Result.List) == 0 {
+		return nil, fmt.Errorf("order not found")
+	}
+
+	order := resp.Result.List[0]
+	return b.convertV5OrderToOrder(&order), nil
 }
 
-// GetOpenOrders retrieves all open orders for a symbol
+// GetOpenOrders retrieves all open orders for a symbol (empty symbol gets all orders)
 func (b *BybitExchange) GetOpenOrders(ctx context.Context, symbol string) ([]*Order, error) {
-	// Mock implementation
-	return []*Order{}, nil
+	param := bybit.V5GetOpenOrdersParam{
+		Category: bybit.CategoryV5Spot,
+	}
+
+	// If symbol is provided, filter by symbol
+	if symbol != "" {
+		param.Symbol = (*bybit.SymbolV5)(&symbol)
+	}
+
+	resp, err := b.client.V5().Order().GetOpenOrders(param)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get open orders: %w", err)
+	}
+
+	orders := make([]*Order, 0, len(resp.Result.List))
+	for _, order := range resp.Result.List {
+		orders = append(orders, b.convertV5OrderToOrder(&order))
+	}
+
+	return orders, nil
+}
+
+// convertV5OrderToOrder converts a Bybit V5 order to our Order struct
+func (b *BybitExchange) convertV5OrderToOrder(v5Order *bybit.V5GetOrder) *Order {
+	quantity, _ := strconv.ParseFloat(v5Order.Qty, 64)
+	price, _ := strconv.ParseFloat(v5Order.Price, 64)
+	createdTime, _ := strconv.ParseInt(v5Order.CreatedTime, 10, 64)
+
+	side := "buy"
+	if v5Order.Side == bybit.SideSell {
+		side = "sell"
+	}
+
+	orderType := "limit"
+	if v5Order.OrderType == bybit.OrderTypeMarket {
+		orderType = "market"
+	}
+
+	status := strings.ToLower(string(v5Order.OrderStatus))
+
+	return &Order{
+		ID:       v5Order.OrderID,
+		Symbol:   string(v5Order.Symbol),
+		Side:     side,
+		Type:     orderType,
+		Quantity: quantity,
+		Price:    price,
+		Status:   status,
+		Time:     time.Unix(createdTime/1000, 0),
+	}
 }
 
 // GetBalances retrieves account balances
 func (b *BybitExchange) GetBalances(ctx context.Context) ([]*Balance, error) {
-	// Mock implementation for testnet
-	return []*Balance{
-		{
-			Asset:     "BTC",
-			Available: 1.0,
-			Locked:    0.0,
-			Total:     1.0,
-		},
-		{
-			Asset:     "USDT",
-			Available: 50000.0,
-			Locked:    0.0,
-			Total:     50000.0,
-		},
-	}, nil
+	// Use UNIFIED account type for V5 API (SPOT is deprecated)
+	resp, err := b.client.V5().Account().GetWalletBalance(bybit.AccountTypeV5("UNIFIED"), nil)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("Failed to get wallet balance")
+		return nil, fmt.Errorf("failed to get wallet balance: %w", err)
+	}
+
+	var balances []*Balance
+	for _, account := range resp.Result.List {
+		for _, coin := range account.Coin {
+			available, _ := strconv.ParseFloat(coin.Free, 64)
+			locked, _ := strconv.ParseFloat(coin.Locked, 64)
+			total, _ := strconv.ParseFloat(coin.WalletBalance, 64)
+
+			balances = append(balances, &Balance{
+				Asset:     string(coin.Coin),
+				Available: available,
+				Locked:    locked,
+				Total:     total,
+			})
+		}
+	}
+
+	return balances, nil
 }
 
 // GetPositions retrieves account positions (not applicable for spot trading)
@@ -547,32 +665,66 @@ func (b *BybitExchange) GetPositions(ctx context.Context) ([]*Position, error) {
 
 // GetKlines retrieves historical kline data
 func (b *BybitExchange) GetKlines(ctx context.Context, symbol string, interval string, limit int) ([]*Kline, error) {
-	bybitInterval := b.mapInterval(interval)
+	bybitInterval := b.mapIntervalToV5(interval)
 	if bybitInterval == "" {
 		return nil, fmt.Errorf("unsupported interval: %s", interval)
 	}
 
-	// Mock implementation - in production, use actual Bybit API
-	var klines []*Kline
-	now := time.Now()
+	param := bybit.V5GetKlineParam{
+		Category: bybit.CategoryV5Spot,
+		Symbol:   bybit.SymbolV5(symbol),
+		Interval: bybit.Interval(bybitInterval),
+		Limit:    &limit,
+	}
 
-	for i := limit; i > 0; i-- {
-		baseTime := now.Add(-time.Duration(i) * time.Minute)
-		basePrice := 50000.0 + float64(i%100)*10
+	resp, err := b.client.V5().Market().GetKline(param)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get klines: %w", err)
+	}
+
+	var klines []*Kline
+	for _, item := range resp.Result.List {
+		open, _ := strconv.ParseFloat(item.Open, 64)
+		high, _ := strconv.ParseFloat(item.High, 64)
+		low, _ := strconv.ParseFloat(item.Low, 64)
+		closePrice, _ := strconv.ParseFloat(item.Close, 64)
+		volume, _ := strconv.ParseFloat(item.Volume, 64)
+		startTime, _ := strconv.ParseInt(item.StartTime, 10, 64)
 
 		klines = append(klines, &Kline{
 			Symbol:    symbol,
-			Open:      basePrice,
-			High:      basePrice + 50,
-			Low:       basePrice - 50,
-			Close:     basePrice + 25,
-			Volume:    1000.0 + float64(i*10),
-			Timestamp: baseTime,
+			Open:      open,
+			High:      high,
+			Low:       low,
+			Close:     closePrice,
+			Volume:    volume,
+			Timestamp: time.Unix(startTime/1000, 0),
 			Interval:  interval,
 		})
 	}
 
 	return klines, nil
+}
+
+// mapIntervalToV5 maps common interval formats to Bybit V5 format
+func (b *BybitExchange) mapIntervalToV5(interval string) string {
+	intervalMap := map[string]string{
+		"1m":  "1",
+		"3m":  "3",
+		"5m":  "5",
+		"15m": "15",
+		"30m": "30",
+		"1h":  "60",
+		"2h":  "120",
+		"4h":  "240",
+		"6h":  "360",
+		"12h": "720",
+		"1d":  "D",
+		"1w":  "W",
+		"1M":  "M",
+	}
+
+	return intervalMap[interval]
 }
 
 // GetOrderBook retrieves order book data

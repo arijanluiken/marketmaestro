@@ -142,6 +142,9 @@ func New(exchangeName string, cfg *config.Config, db *database.DB, logger zerolo
 // SetExchange sets the exchange interface for order operations
 func (o *OrderManagerActor) SetExchange(exchange exchanges.Exchange) {
 	o.exchange = exchange
+
+	// Trigger order sync now that we have an exchange interface
+	go o.syncOrdersFromExchange(nil)
 }
 
 // Receive handles incoming messages
@@ -151,6 +154,8 @@ func (o *OrderManagerActor) Receive(ctx *actor.Context) {
 		o.onStarted(ctx)
 	case actor.Stopped:
 		o.onStopped(ctx)
+	case actor.Initialized:
+		o.onInitialized(ctx)
 	case PlaceOrderMsg:
 		o.onPlaceOrder(ctx, msg)
 	case PlaceTrailingStopMsg:
@@ -188,6 +193,139 @@ func (o *OrderManagerActor) onStarted(ctx *actor.Context) {
 
 	// Start price monitoring for stop and trailing orders
 	o.startPriceMonitoring(ctx)
+}
+
+func (o *OrderManagerActor) onInitialized(ctx *actor.Context) {
+	o.logger.Debug().
+		Str("exchange", o.exchangeName).
+		Msg("Order manager actor initialized")
+
+	// Order sync will be triggered when exchange interface is set
+}
+
+// syncOrdersFromExchange synchronizes orders from the exchange on startup
+func (o *OrderManagerActor) syncOrdersFromExchange(ctx *actor.Context) {
+	if o.exchange == nil {
+		o.logger.Warn().Msg("No exchange interface available for order sync")
+		return
+	}
+
+	o.logger.Info().Msg("Starting order synchronization from exchange")
+
+	// Get all open orders from exchange (empty symbol gets all)
+	exchangeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	exchangeOrders, err := o.exchange.GetOpenOrders(exchangeCtx, "")
+	if err != nil {
+		o.logger.Error().Err(err).Msg("Failed to get open orders from exchange")
+		return
+	}
+
+	// Get existing orders from database
+	existingOrders, err := o.db.GetAllOpenOrders()
+	if err != nil {
+		o.logger.Error().Err(err).Msg("Failed to get orders from database")
+		return
+	}
+
+	// Create maps for efficient lookup
+	exchangeOrderMap := make(map[string]*exchanges.Order)
+	for _, order := range exchangeOrders {
+		exchangeOrderMap[order.ID] = order
+	}
+
+	existingOrderMap := make(map[string]*database.Order)
+	for _, order := range existingOrders {
+		existingOrderMap[order.ExchangeOrderID] = order
+	}
+
+	// Sync orders
+	var syncedCount, cancelledCount, newCount int
+
+	// 1. Update existing orders and mark cancelled ones
+	for _, dbOrder := range existingOrders {
+		if exchangeOrder, exists := exchangeOrderMap[dbOrder.ExchangeOrderID]; exists {
+			// Order still exists on exchange, update status if needed
+			if o.needsStatusUpdate(dbOrder, exchangeOrder) {
+				err := o.updateOrderFromExchange(dbOrder, exchangeOrder)
+				if err != nil {
+					o.logger.Error().Err(err).
+						Int64("order_id", dbOrder.ID).
+						Msg("Failed to update order from exchange")
+				} else {
+					syncedCount++
+				}
+			}
+		} else if dbOrder.Status == StatusOpen || dbOrder.Status == StatusPartiallyFilled {
+			// Order doesn't exist on exchange but is open in DB - mark as cancelled
+			err := o.db.UpdateOrderStatus(dbOrder.ExchangeOrderID, StatusCancelled)
+			if err != nil {
+				o.logger.Error().Err(err).
+					Int64("order_id", dbOrder.ID).
+					Msg("Failed to update cancelled order status")
+			} else {
+				cancelledCount++
+				o.logger.Info().
+					Int64("order_id", dbOrder.ID).
+					Str("exchange_order_id", dbOrder.ExchangeOrderID).
+					Msg("Marked order as cancelled (not found on exchange)")
+			}
+		}
+	}
+
+	// 2. Add new orders found on exchange but not in database
+	for _, exchangeOrder := range exchangeOrders {
+		if _, exists := existingOrderMap[exchangeOrder.ID]; !exists {
+			// This is a new order not in our database
+			dbOrder := &database.Order{
+				ExchangeOrderID: exchangeOrder.ID,
+				Symbol:          exchangeOrder.Symbol,
+				Side:            exchangeOrder.Side,
+				Type:            exchangeOrder.Type,
+				Quantity:        exchangeOrder.Quantity,
+				Price:           exchangeOrder.Price,
+				Status:          exchangeOrder.Status,
+				CreatedAt:       exchangeOrder.Time,
+				UpdatedAt:       time.Now(),
+				Exchange:        o.exchangeName,
+			}
+
+			err := o.db.SaveOrder(dbOrder)
+			if err != nil {
+				o.logger.Error().Err(err).
+					Str("exchange_order_id", exchangeOrder.ID).
+					Msg("Failed to save synced order")
+			} else {
+				newCount++
+				o.logger.Info().
+					Int64("order_id", dbOrder.ID).
+					Str("exchange_order_id", exchangeOrder.ID).
+					Str("symbol", exchangeOrder.Symbol).
+					Msg("Added order from exchange sync")
+			}
+		}
+	}
+
+	o.logger.Info().
+		Int("synced", syncedCount).
+		Int("cancelled", cancelledCount).
+		Int("new", newCount).
+		Int("total_exchange_orders", len(exchangeOrders)).
+		Msg("Order synchronization completed")
+}
+
+// needsStatusUpdate checks if the database order needs status update from exchange
+func (o *OrderManagerActor) needsStatusUpdate(dbOrder *database.Order, exchangeOrder *exchanges.Order) bool {
+	return dbOrder.Status != exchangeOrder.Status
+}
+
+// updateOrderFromExchange updates database order with exchange order data
+func (o *OrderManagerActor) updateOrderFromExchange(dbOrder *database.Order, exchangeOrder *exchanges.Order) error {
+	dbOrder.Status = exchangeOrder.Status
+	dbOrder.UpdatedAt = time.Now()
+
+	return o.db.UpdateOrder(dbOrder)
 }
 
 func (o *OrderManagerActor) onStopped(ctx *actor.Context) {

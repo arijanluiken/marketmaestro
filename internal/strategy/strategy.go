@@ -73,6 +73,8 @@ func (s *StrategyActor) Receive(ctx *actor.Context) {
 		s.onStarted(ctx)
 	case actor.Stopped:
 		s.onStopped(ctx)
+	case actor.Initialized:
+		s.onInitialized(ctx)
 	case StartStrategyMsg:
 		s.onStartStrategy(ctx)
 	case StopStrategyMsg:
@@ -103,6 +105,13 @@ func (s *StrategyActor) onStarted(ctx *actor.Context) {
 
 	// Auto-start the strategy
 	ctx.Send(ctx.PID(), StartStrategyMsg{})
+}
+
+func (s *StrategyActor) onInitialized(ctx *actor.Context) {
+	s.logger.Debug().
+		Str("strategy", s.strategyName).
+		Str("symbol", s.symbol).
+		Msg("Strategy actor initialized")
 }
 
 func (s *StrategyActor) onStopped(ctx *actor.Context) {

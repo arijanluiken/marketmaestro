@@ -90,6 +90,8 @@ func (s *Supervisor) Receive(ctx *actor.Context) {
 		s.onStarted(ctx)
 	case actor.Stopped:
 		s.onStopped(ctx)
+	case actor.Initialized:
+		s.onInitialized(ctx)
 	case StartMessage:
 		s.onStart(ctx)
 	case StopMessage:
@@ -118,6 +120,10 @@ func (s *Supervisor) onStopped(ctx *actor.Context) {
 	if s.db != nil {
 		s.db.Close()
 	}
+}
+
+func (s *Supervisor) onInitialized(ctx *actor.Context) {
+	s.logger.Debug().Msg("Supervisor actor initialized")
 }
 
 func (s *Supervisor) onStart(ctx *actor.Context) {

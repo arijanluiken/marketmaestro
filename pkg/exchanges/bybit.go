@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -687,6 +689,50 @@ func (b *BybitExchange) GetPositions(ctx context.Context) ([]*Position, error) {
 	return []*Position{}, nil
 }
 
+// getUSDIndexPrice fetches the USD index price for a symbol from Bybit testnet
+func (b *BybitExchange) getUSDIndexPrice(symbol string) (float64, error) {
+	if !b.testnet {
+		return 0, nil
+	}
+
+	url := fmt.Sprintf("https://api-testnet.bybit.com/v5/market/tickers?category=spot&symbol=%s", symbol)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch ticker: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var tickerResponse struct {
+		Result struct {
+			List []struct {
+				UsdIndexPrice string `json:"usdIndexPrice"`
+				LastPrice     string `json:"lastPrice"`
+			} `json:"list"`
+		} `json:"result"`
+	}
+
+	if err := json.Unmarshal(body, &tickerResponse); err != nil {
+		return 0, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(tickerResponse.Result.List) == 0 {
+		return 0, fmt.Errorf("no ticker data found")
+	}
+
+	usdIndexPrice, err := strconv.ParseFloat(tickerResponse.Result.List[0].UsdIndexPrice, 64)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse USD index price: %w", err)
+	}
+
+	return usdIndexPrice, nil
+}
+
 // GetKlines retrieves historical kline data
 func (b *BybitExchange) GetKlines(ctx context.Context, symbol string, interval string, limit int) ([]*Kline, error) {
 	bybitInterval := b.mapIntervalToV5(interval)
@@ -694,6 +740,7 @@ func (b *BybitExchange) GetKlines(ctx context.Context, symbol string, interval s
 		return nil, fmt.Errorf("unsupported interval: %s", interval)
 	}
 
+	// Get spot market data for OHLC structure
 	param := bybit.V5GetKlineParam{
 		Category: bybit.CategoryV5Spot,
 		Symbol:   bybit.SymbolV5(symbol),
@@ -706,6 +753,31 @@ func (b *BybitExchange) GetKlines(ctx context.Context, symbol string, interval s
 		return nil, fmt.Errorf("failed to get klines: %w", err)
 	}
 
+	// Get USD index price for testnet accuracy
+	var usdIndexPrice float64
+	var spotPrice float64
+	if b.testnet && symbol == "BTCUSDT" {
+		usdIndexPrice, err = b.getUSDIndexPrice(symbol)
+		if err != nil {
+			b.logger.Warn().Err(err).Msg("Failed to get USD index price, using spot prices")
+		} else if len(resp.Result.List) > 0 {
+			spotPrice, _ = strconv.ParseFloat(resp.Result.List[0].Close, 64)
+
+			b.logger.Info().
+				Str("symbol", symbol).
+				Float64("spot_price", spotPrice).
+				Float64("usd_index_price", usdIndexPrice).
+				Msg("Retrieved USD index price for testnet accuracy")
+		}
+	}
+
+	b.logger.Info().
+		Str("symbol", symbol).
+		Str("category", "spot").
+		Int("result_count", len(resp.Result.List)).
+		Float64("usd_index_price", usdIndexPrice).
+		Msg("Received spot klines from Bybit API")
+
 	var klines []*Kline
 	for _, item := range resp.Result.List {
 		open, _ := strconv.ParseFloat(item.Open, 64)
@@ -714,6 +786,24 @@ func (b *BybitExchange) GetKlines(ctx context.Context, symbol string, interval s
 		closePrice, _ := strconv.ParseFloat(item.Close, 64)
 		volume, _ := strconv.ParseFloat(item.Volume, 64)
 		startTime, _ := strconv.ParseInt(item.StartTime, 10, 64)
+
+		// For testnet, adjust prices using USD index price ratio to maintain OHLC structure
+		// while providing accurate pricing relative to real market values
+		if b.testnet && usdIndexPrice > 0 && spotPrice > 0 {
+			ratio := usdIndexPrice / spotPrice
+			originalClose := closePrice
+			open *= ratio
+			high *= ratio
+			low *= ratio
+			closePrice *= ratio
+
+			b.logger.Debug().
+				Str("symbol", symbol).
+				Float64("ratio", ratio).
+				Float64("original_close", originalClose).
+				Float64("adjusted_close", closePrice).
+				Msg("Applied USD index price ratio to kline data")
+		}
 
 		klines = append(klines, &Kline{
 			Symbol:    symbol,

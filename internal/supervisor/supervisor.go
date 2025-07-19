@@ -61,16 +61,20 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	s.db = db
 
-	// Create actor system
-	system := actor.NewSystem("mercantile")
+	// Create actor engine
+	config := actor.NewEngineConfig()
+	engine, err := actor.NewEngine(config)
+	if err != nil {
+		return fmt.Errorf("failed to create actor engine: %w", err)
+	}
 
 	// Spawn supervisor actor
-	supervisorPID := system.Root.SpawnFunc(func() actor.Receiver {
+	supervisorPID := engine.Spawn(func() actor.Receiver {
 		return s
 	}, "supervisor")
 
 	// Send start message to supervisor
-	system.Root.Send(supervisorPID, StartMessage{})
+	engine.Send(supervisorPID, StartMessage{})
 
 	s.logger.Info().Msg("Supervisor actor system started successfully")
 	return nil
@@ -150,17 +154,17 @@ func (s *Supervisor) onStop(ctx *actor.Context) {
 	// Stop all exchange actors
 	for name, pid := range s.exchangeActors {
 		s.logger.Info().Str("exchange", name).Msg("Stopping exchange actor")
-		ctx.Stop(pid)
+		ctx.Engine().Stop(pid)
 	}
 
 	// Stop API actor
 	if s.apiActor != nil {
-		ctx.Stop(s.apiActor)
+		ctx.Engine().Stop(s.apiActor)
 	}
 
 	// Stop UI actor
 	if s.uiActor != nil {
-		ctx.Stop(s.uiActor)
+		ctx.Engine().Stop(s.uiActor)
 	}
 }
 

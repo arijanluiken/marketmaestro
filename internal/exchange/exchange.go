@@ -394,8 +394,8 @@ func (e *ExchangeActor) onSubscribeOrderBook(ctx *actor.Context, msg SubscribeOr
 
 // DataHandler interface implementation
 func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
-	// Info level only for important price updates
-	e.logger.Info().
+	// Debug level to reduce chattiness - only visible when debug logging is enabled
+	e.logger.Debug().
 		Str("symbol", kline.Symbol).
 		Str("interval", kline.Interval).
 		Float64("close", kline.Close).

@@ -105,6 +105,26 @@ func (se *StrategyEngine) setupBuiltins() {
 				return nil, fmt.Errorf("abs() requires a number")
 			}),
 		}),
+		// Technical Indicators
+		"sma":         starlark.NewBuiltin("sma", se.sma),
+		"ema":         starlark.NewBuiltin("ema", se.ema),
+		"rsi":         starlark.NewBuiltin("rsi", se.rsi),
+		"macd":        starlark.NewBuiltin("macd", se.macd),
+		"bollinger":   starlark.NewBuiltin("bollinger", se.bollinger),
+		"stochastic":  starlark.NewBuiltin("stochastic", se.stochastic),
+		"williams_r":  starlark.NewBuiltin("williams_r", se.williamsR),
+		"atr":         starlark.NewBuiltin("atr", se.atr),
+		"cci":         starlark.NewBuiltin("cci", se.cci),
+		"vwap":        starlark.NewBuiltin("vwap", se.vwap),
+		"mfi":         starlark.NewBuiltin("mfi", se.mfi),
+		"stddev":      starlark.NewBuiltin("stddev", se.stddev),
+		"roc":         starlark.NewBuiltin("roc", se.roc),
+		// Utility functions
+		"highest":     starlark.NewBuiltin("highest", se.highest),
+		"lowest":      starlark.NewBuiltin("lowest", se.lowest),
+		"crossover":   starlark.NewBuiltin("crossover", se.crossover),
+		"crossunder":  starlark.NewBuiltin("crossunder", se.crossunder),
+		"log":         starlark.NewBuiltin("log", se.logFunc),
 	}
 }
 
@@ -824,6 +844,131 @@ func (se *StrategyEngine) printFunc(thread *starlark.Thread, fn *starlark.Builti
 
 	se.logger.Debug().Str("source", "strategy").Msg(string(msg))
 	return starlark.None, nil
+}
+
+// New indicator functions
+
+func (se *StrategyEngine) williamsR(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "period?", &period); err != nil {
+		return nil, err
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt == 0 {
+		periodInt = 14
+	}
+
+	result := se.indicators.calculateWilliamsR(high.(*starlark.List), low.(*starlark.List), close.(*starlark.List), int(periodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+func (se *StrategyEngine) atr(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "period?", &period); err != nil {
+		return nil, err
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt == 0 {
+		periodInt = 14
+	}
+
+	result := se.indicators.calculateATR(high.(*starlark.List), low.(*starlark.List), close.(*starlark.List), int(periodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+func (se *StrategyEngine) cci(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "period?", &period); err != nil {
+		return nil, err
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt == 0 {
+		periodInt = 20
+	}
+
+	result := se.indicators.calculateCCI(high.(*starlark.List), low.(*starlark.List), close.(*starlark.List), int(periodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+func (se *StrategyEngine) vwap(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close, volume starlark.Value
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "volume", &volume); err != nil {
+		return nil, err
+	}
+
+	result := se.indicators.calculateVWAP(high.(*starlark.List), low.(*starlark.List), close.(*starlark.List), volume.(*starlark.List))
+	return se.floatListToStarlark(result), nil
+}
+
+func (se *StrategyEngine) mfi(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var high, low, close, volume starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "high", &high, "low", &low, "close", &close, "volume", &volume, "period?", &period); err != nil {
+		return nil, err
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt == 0 {
+		periodInt = 14
+	}
+
+	result := se.indicators.calculateMFI(high.(*starlark.List), low.(*starlark.List), close.(*starlark.List), volume.(*starlark.List), int(periodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+func (se *StrategyEngine) stddev(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var prices starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "prices", &prices, "period", &period); err != nil {
+		return nil, err
+	}
+
+	priceList, ok := prices.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("prices must be a list")
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt <= 0 {
+		return nil, fmt.Errorf("period must be positive")
+	}
+
+	result := se.indicators.calculateStdDev(priceList, int(periodInt))
+	return se.floatListToStarlark(result), nil
+}
+
+func (se *StrategyEngine) roc(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	var prices starlark.Value
+	var period starlark.Int
+
+	if err := starlark.UnpackArgs(fn.Name(), args, kwargs, "prices", &prices, "period", &period); err != nil {
+		return nil, err
+	}
+
+	priceList, ok := prices.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("prices must be a list")
+	}
+
+	periodInt, _ := period.Int64()
+	if periodInt <= 0 {
+		return nil, fmt.Errorf("period must be positive")
+	}
+
+	result := se.indicators.calculateROC(priceList, int(periodInt))
+	return se.floatListToStarlark(result), nil
 }
 
 // Helper functions for data conversion

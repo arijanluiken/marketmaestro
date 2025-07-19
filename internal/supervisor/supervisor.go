@@ -18,11 +18,14 @@ import (
 
 // Messages for supervisor actor communication
 type (
-	StartMessage    struct{}
-	StopMessage     struct{}
-	StatusMessage   struct{}
-	ErrorMessage    struct{ Error error }
-	RegisterExchange struct{ Name string; Config map[string]interface{} }
+	StartMessage     struct{}
+	StopMessage      struct{}
+	StatusMessage    struct{}
+	ErrorMessage     struct{ Error error }
+	RegisterExchange struct {
+		Name   string
+		Config map[string]interface{}
+	}
 )
 
 // Supervisor manages all other actors in the system
@@ -130,21 +133,29 @@ func (s *Supervisor) onStart(ctx *actor.Context) {
 	}, "ui")
 	s.uiActor = uiActorPID
 
-	// Start exchange actors if API keys are configured
-	if s.config.BybitAPIKey != "" && s.config.BybitSecret != "" {
-		s.startExchangeActor(ctx, "bybit", map[string]interface{}{
-			"api_key":  s.config.BybitAPIKey,
-			"secret":   s.config.BybitSecret,
-			"testnet":  s.config.BybitTestnet,
-		})
-	}
+	// Start exchange actors based on configuration
+	for exchangeName, exchangeConfig := range s.config.Exchanges {
+		if !exchangeConfig.Enabled {
+			s.logger.Info().Str("exchange", exchangeName).Msg("Exchange disabled in configuration")
+			continue
+		}
 
-	if s.config.BitvavoAPIKey != "" && s.config.BitvavoSecret != "" {
-		s.startExchangeActor(ctx, "bitvavo", map[string]interface{}{
-			"api_key":  s.config.BitvavoAPIKey,
-			"secret":   s.config.BitvavoSecret,
-			"testnet":  s.config.BitvavoTestnet,
-		})
+		// Check if we have API credentials for this exchange
+		var hasCredentials bool
+		switch exchangeName {
+		case "bybit":
+			hasCredentials = s.config.BybitAPIKey != "" && s.config.BybitSecret != ""
+		case "bitvavo":
+			hasCredentials = s.config.BitvavoAPIKey != "" && s.config.BitvavoSecret != ""
+		}
+
+		if hasCredentials {
+			s.startExchangeActor(ctx, exchangeName, map[string]interface{}{
+				"enabled": exchangeConfig.Enabled,
+			})
+		} else {
+			s.logger.Warn().Str("exchange", exchangeName).Msg("Exchange enabled but missing API credentials")
+		}
 	}
 }
 
@@ -170,10 +181,10 @@ func (s *Supervisor) onStop(ctx *actor.Context) {
 
 func (s *Supervisor) onStatus(ctx *actor.Context) {
 	status := map[string]interface{}{
-		"timestamp":        time.Now(),
-		"exchange_actors":  len(s.exchangeActors),
-		"api_actor_alive":  s.apiActor != nil,
-		"ui_actor_alive":   s.uiActor != nil,
+		"timestamp":       time.Now(),
+		"exchange_actors": len(s.exchangeActors),
+		"api_actor_alive": s.apiActor != nil,
+		"ui_actor_alive":  s.uiActor != nil,
 	}
 
 	s.logger.Info().Interface("status", status).Msg("Supervisor status")

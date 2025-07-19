@@ -8,13 +8,51 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// StrategyConfig holds strategy-specific configuration
+type StrategyConfig struct {
+	Name   string                 `yaml:"name"`
+	Config map[string]interface{} `yaml:"config"`
+}
+
+// PairConfig holds configuration for a trading pair
+type PairConfig struct {
+	Symbol     string           `yaml:"symbol"`
+	Strategies []StrategyConfig `yaml:"strategies"`
+}
+
+// ExchangeConfig holds exchange-specific configuration
+type ExchangeConfig struct {
+	Enabled bool         `yaml:"enabled"`
+	Pairs   []PairConfig `yaml:"pairs"`
+}
+
+// StrategiesConfig holds global strategy settings
+type StrategiesConfig struct {
+	Directory       string `yaml:"directory"`
+	DefaultInterval string `yaml:"default_interval"`
+	MaxConcurrent   int    `yaml:"max_concurrent"`
+}
+
+// RiskConfig holds risk management settings
+type RiskConfig struct {
+	MaxPositionSize  float64 `yaml:"max_position_size"`
+	MaxDailyLoss     float64 `yaml:"max_daily_loss"`
+	MaxDailyVolume   float64 `yaml:"max_daily_volume"`
+	MaxDailyRisk     float64 `yaml:"max_daily_risk"`
+	MaxDrawdown      float64 `yaml:"max_drawdown"`
+	MaxOpenPositions int     `yaml:"max_open_positions"`
+}
+
 // Config holds the application configuration
 type Config struct {
-	Database DatabaseConfig `yaml:"database"`
-	API      APIConfig      `yaml:"api"`
-	UI       UIConfig       `yaml:"ui"`
-	Logging  LoggingConfig  `yaml:"logging"`
-	
+	Database   DatabaseConfig            `yaml:"database"`
+	API        APIConfig                 `yaml:"api"`
+	UI         UIConfig                  `yaml:"ui"`
+	Logging    LoggingConfig             `yaml:"logging"`
+	Exchanges  map[string]ExchangeConfig `yaml:"exchanges"`
+	Strategies StrategiesConfig          `yaml:"strategies"`
+	Risk       RiskConfig                `yaml:"risk"`
+
 	// Environment variables (from .env)
 	BybitAPIKey    string
 	BybitSecret    string
@@ -48,7 +86,7 @@ func Load() (*Config, error) {
 
 	config := &Config{
 		Database: DatabaseConfig{
-			Path: getEnvOrDefault("DATABASE_PATH", "./data.db"),
+			Path: getEnvOrDefault("DATABASE_PATH", "./mercantile.db"),
 		},
 		API: APIConfig{
 			Port:    getEnvIntOrDefault("API_PORT", 8080),
@@ -60,6 +98,17 @@ func Load() (*Config, error) {
 		Logging: LoggingConfig{
 			Level: getEnvOrDefault("LOG_LEVEL", "info"),
 		},
+		Strategies: StrategiesConfig{
+			Directory:       "./strategies",
+			DefaultInterval: "1m",
+			MaxConcurrent:   10,
+		},
+		Risk: RiskConfig{
+			MaxPositionSize:  0.1,
+			MaxDailyLoss:     1000.0,
+			MaxOpenPositions: 5,
+		},
+		Exchanges:      make(map[string]ExchangeConfig),
 		BybitAPIKey:    os.Getenv("BYBIT_API_KEY"),
 		BybitSecret:    os.Getenv("BYBIT_SECRET"),
 		BybitTestnet:   getEnvOrDefault("BYBIT_TESTNET", "false") == "true",

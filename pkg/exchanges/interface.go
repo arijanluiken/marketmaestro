@@ -14,6 +14,7 @@ type Kline struct {
 	Low       float64
 	Close     float64
 	Volume    float64
+	Interval  string
 }
 
 // OrderBookEntry represents a single order book entry
@@ -61,23 +62,52 @@ type Balance struct {
 	Total     float64
 }
 
-// DataHandler defines callbacks for receiving data
+// DataHandler is called when data is received from the exchange
 type DataHandler interface {
 	OnKline(kline *Kline)
-	OnOrderBook(orderbook *OrderBook)
-	OnOrder(order *Order)
-	OnPosition(position *Position)
-	OnBalance(balance *Balance)
+	OnOrderBook(orderBook *OrderBook)
+	OnTicker(ticker *Ticker)
 }
 
-// Exchange defines the interface for cryptocurrency exchanges
+// Ticker represents price ticker information
+type Ticker struct {
+	Symbol    string
+	Price     float64
+	Volume    float64
+	Change    float64 // 24h price change
+	ChangeP   float64 // 24h price change percentage
+	Timestamp time.Time
+}
+
+// Symbol represents trading symbol information
+type Symbol struct {
+	Name              string
+	BaseAsset         string
+	QuoteAsset        string
+	Status            string
+	MinOrderSize      float64
+	MaxOrderSize      float64
+	MinPrice          float64
+	MaxPrice          float64
+	PricePrecision    int
+	QuantityPrecision int
+}
+
+// ExchangeInfo represents exchange information
+type ExchangeInfo struct {
+	Name    string
+	Symbols []*Symbol
+}
+
+// Exchange interface defines the methods that all exchange implementations must implement
 type Exchange interface {
-	// Connection management
+	// Basic connectivity
+	GetName() string
 	Connect(ctx context.Context) error
 	Disconnect() error
 	IsConnected() bool
 
-	// Data subscriptions
+	// Data streaming
 	SubscribeKlines(ctx context.Context, symbols []string, interval string, handler DataHandler) error
 	SubscribeOrderBook(ctx context.Context, symbols []string, handler DataHandler) error
 	UnsubscribeKlines(symbols []string) error
@@ -97,38 +127,5 @@ type Exchange interface {
 	GetKlines(ctx context.Context, symbol string, interval string, limit int) ([]*Kline, error)
 	GetOrderBook(ctx context.Context, symbol string, limit int) (*OrderBook, error)
 	GetTicker(ctx context.Context, symbol string) (*Ticker, error)
-
-	// Exchange information
 	GetExchangeInfo(ctx context.Context) (*ExchangeInfo, error)
-	GetName() string
-}
-
-// Ticker represents ticker information
-type Ticker struct {
-	Symbol    string
-	Price     float64
-	Volume    float64
-	Change    float64
-	ChangeP   float64
-	Timestamp time.Time
-}
-
-// Symbol represents trading pair information
-type Symbol struct {
-	Name              string
-	BaseAsset         string
-	QuoteAsset        string
-	Status            string
-	MinOrderSize      float64
-	MaxOrderSize      float64
-	MinPrice          float64
-	MaxPrice          float64
-	PricePrecision    int
-	QuantityPrecision int
-}
-
-// ExchangeInfo represents exchange information
-type ExchangeInfo struct {
-	Name    string
-	Symbols []*Symbol
 }

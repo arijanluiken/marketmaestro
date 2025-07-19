@@ -20,56 +20,62 @@ import (
 
 // Messages for exchange actor communication
 type (
-	ConnectMessage       struct{}
-	DisconnectMessage    struct{}
-	SubscribeKlinesMsg   struct{ Symbols []string; Interval string }
+	ConnectMessage     struct{}
+	DisconnectMessage  struct{}
+	SubscribeKlinesMsg struct {
+		Symbols  []string
+		Interval string
+	}
 	SubscribeOrderBookMsg struct{ Symbols []string }
-	GetBalancesMsg       struct{}
-	GetPositionsMsg      struct{}
-	StatusMsg            struct{}
-	
+	GetBalancesMsg        struct{}
+	GetPositionsMsg       struct{}
+	StatusMsg             struct{}
+
 	// Data messages
-	KlineDataMsg     struct{ Kline *exchanges.Kline }
-	OrderBookDataMsg struct{ OrderBook *exchanges.OrderBook }
-	OrderUpdateMsg   struct{ Order *exchanges.Order }
+	KlineDataMsg      struct{ Kline *exchanges.Kline }
+	OrderBookDataMsg  struct{ OrderBook *exchanges.OrderBook }
+	OrderUpdateMsg    struct{ Order *exchanges.Order }
 	PositionUpdateMsg struct{ Position *exchanges.Position }
-	BalanceUpdateMsg struct{ Balance *exchanges.Balance }
+	BalanceUpdateMsg  struct{ Balance *exchanges.Balance }
 )
 
 // ExchangeActor manages exchange connections and child actors
 type ExchangeActor struct {
-	exchangeName   string
-	config         *config.Config
-	db             *database.DB
-	logger         zerolog.Logger
-	exchange       exchanges.Exchange
-	factory        *exchanges.Factory
-	
+	exchangeName string
+	config       *config.Config
+	db           *database.DB
+	logger       zerolog.Logger
+	exchange     exchanges.Exchange
+	factory      *exchanges.Factory
+
 	// Child actors
 	strategyActors  map[string]*actor.PID
 	orderManagerPID *actor.PID
 	riskManagerPID  *actor.PID
 	portfolioPID    *actor.PID
 	settingsPID     *actor.PID
-	
+
 	// State
-	connected       bool
-	subscribedKlines map[string]bool
+	connected            bool
+	subscribedKlines     map[string]bool
 	subscribedOrderBooks map[string]bool
+
+	// Store actor system for sending messages from callbacks
+	actorSystem *actor.Engine
 }
 
 // New creates a new exchange actor
 func New(exchangeName string, exchangeConfig map[string]interface{}, cfg *config.Config, db *database.DB, logger zerolog.Logger) *ExchangeActor {
 	factory := exchanges.NewFactory(logger)
-	
+
 	return &ExchangeActor{
 		exchangeName:         exchangeName,
-		config:              cfg,
-		db:                  db,
-		logger:              logger,
-		factory:             factory,
-		strategyActors:      make(map[string]*actor.PID),
-		subscribedKlines:    make(map[string]bool),
+		config:               cfg,
+		db:                   db,
+		logger:               logger,
+		factory:              factory,
+		strategyActors:       make(map[string]*actor.PID),
+		subscribedKlines:     make(map[string]bool),
 		subscribedOrderBooks: make(map[string]bool),
 	}
 }
@@ -99,6 +105,11 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onKlineData(ctx, msg)
 	case OrderBookDataMsg:
 		e.onOrderBookData(ctx, msg)
+	// Portfolio actor messages
+	case portfolio.GetBalancesMsg:
+		e.onPortfolioRequestBalances(ctx)
+	case portfolio.GetPositionsMsg:
+		e.onPortfolioRequestPositions(ctx)
 	default:
 		e.logger.Warn().
 			Str("message_type", fmt.Sprintf("%T", msg)).
@@ -108,17 +119,74 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 
 func (e *ExchangeActor) onStarted(ctx *actor.Context) {
 	e.logger.Info().Str("exchange", e.exchangeName).Msg("Exchange actor started")
-	
+
+	// Store actor system for sending messages from callbacks
+	e.actorSystem = ctx.Engine()
+
 	// Start child actors
 	e.startChildActors(ctx)
-	
+
 	// Auto-connect to exchange
 	ctx.Send(ctx.PID(), ConnectMessage{})
+
+	// Start configured strategies
+	e.startConfiguredStrategies(ctx)
+}
+
+func (e *ExchangeActor) startConfiguredStrategies(ctx *actor.Context) {
+	// Check if this exchange is configured
+	exchangeConfig, exists := e.config.Exchanges[e.exchangeName]
+	if !exists || !exchangeConfig.Enabled {
+		e.logger.Info().Str("exchange", e.exchangeName).Msg("Exchange not enabled in configuration")
+		return
+	}
+
+	// Start strategies for each configured pair
+	for _, pairConfig := range exchangeConfig.Pairs {
+		symbols := []string{pairConfig.Symbol}
+
+		// Collect unique intervals from all strategies for this symbol
+		intervals := make(map[string]bool)
+		for _, strategyConfig := range pairConfig.Strategies {
+			interval := e.config.Strategies.DefaultInterval
+			if strategyInterval, exists := strategyConfig.Config["interval"]; exists {
+				if intervalStr, ok := strategyInterval.(string); ok {
+					interval = intervalStr
+				}
+			}
+			intervals[interval] = true
+		}
+
+		// Subscribe to klines for each unique interval
+		for interval := range intervals {
+			ctx.Send(ctx.PID(), SubscribeKlinesMsg{
+				Symbols:  symbols,
+				Interval: interval,
+			})
+		}
+
+		// Subscribe to order book for this symbol (only once)
+		ctx.Send(ctx.PID(), SubscribeOrderBookMsg{
+			Symbols: symbols,
+		})
+
+		// Start each strategy for this pair
+		for _, strategyConfig := range pairConfig.Strategies {
+			err := e.StartStrategy(ctx, strategyConfig.Name, pairConfig.Symbol, strategyConfig.Config)
+			if err != nil {
+				e.logger.Error().
+					Err(err).
+					Str("strategy", strategyConfig.Name).
+					Str("symbol", pairConfig.Symbol).
+					Msg("Failed to start strategy")
+			}
+		}
+	}
 }
 
 func (e *ExchangeActor) onStopped(ctx *actor.Context) {
 	e.logger.Info().Str("exchange", e.exchangeName).Msg("Exchange actor stopped")
-	
+
 	if e.exchange != nil && e.connected {
 		e.exchange.Disconnect()
 	}
@@ -127,7 +195,8 @@ func (e *ExchangeActor) onStopped(ctx *actor.Context) {
 func (e *ExchangeActor) startChildActors(ctx *actor.Context) {
 	// Start Order Manager Actor
 	orderManagerPID := ctx.SpawnChild(func() actor.Receiver {
-		return order.New(e.exchangeName, e.config, e.db, e.logger.With().Str("actor", "order_manager").Logger())
+		orderManager := order.New(e.exchangeName, e.config, e.db, e.logger.With().Str("actor", "order_manager").Logger())
+		return orderManager
 	}, "order_manager")
 	e.orderManagerPID = orderManagerPID
 
@@ -142,6 +211,9 @@ func (e *ExchangeActor) startChildActors(ctx *actor.Context) {
 		return portfolio.New(e.exchangeName, e.config, e.db, e.logger.With().Str("actor", "portfolio").Logger())
 	}, "portfolio")
 	e.portfolioPID = portfolioPID
+
+	// Send exchange actor reference to portfolio actor
+	ctx.Send(portfolioPID, portfolio.SetExchangeActorMsg{ExchangeActorPID: ctx.PID()})
 
 	// Start Settings Actor
 	settingsPID := ctx.SpawnChild(func() actor.Receiver {
@@ -160,7 +232,7 @@ func (e *ExchangeActor) onConnect(ctx *actor.Context) {
 
 	// Create exchange instance
 	exchangeConfig := map[string]interface{}{
-		"api_key": "",  // These would come from config
+		"api_key": "", // These would come from config
 		"secret":  "",
 		"testnet": false,
 	}
@@ -180,20 +252,29 @@ func (e *ExchangeActor) onConnect(ctx *actor.Context) {
 		e.logger.Error().Err(err).Msg("Failed to create exchange instance")
 		return
 	}
-	
+
 	e.exchange = exchange
 
 	// Connect to exchange
 	connectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	if err := e.exchange.Connect(connectCtx); err != nil {
 		e.logger.Error().Err(err).Msg("Failed to connect to exchange")
 		return
 	}
-	
+
 	e.connected = true
 	e.logger.Info().Msg("Successfully connected to exchange")
+
+	// Provide exchange interface to order manager
+	if e.orderManagerPID != nil {
+		orderManagerSetExchangeMsg := map[string]interface{}{
+			"action":   "set_exchange",
+			"exchange": e.exchange,
+		}
+		ctx.Send(e.orderManagerPID, orderManagerSetExchangeMsg)
+	}
 }
 
 func (e *ExchangeActor) onDisconnect(ctx *actor.Context) {
@@ -201,11 +282,11 @@ func (e *ExchangeActor) onDisconnect(ctx *actor.Context) {
 		e.logger.Warn().Msg("Not connected to exchange")
 		return
 	}
-	
+
 	if err := e.exchange.Disconnect(); err != nil {
 		e.logger.Error().Err(err).Msg("Error disconnecting from exchange")
 	}
-	
+
 	e.connected = false
 	e.logger.Info().Msg("Disconnected from exchange")
 }
@@ -215,13 +296,20 @@ func (e *ExchangeActor) onSubscribeKlines(ctx *actor.Context, msg SubscribeKline
 		e.logger.Error().Msg("Cannot subscribe to klines: not connected")
 		return
 	}
-	
+
 	e.logger.Info().
 		Strs("symbols", msg.Symbols).
 		Str("interval", msg.Interval).
 		Msg("Subscribing to klines")
-	
-	// Note: This would use WebSocket in a full implementation
+
+	// Subscribe to klines via exchange WebSocket with this actor as handler
+	err := e.exchange.SubscribeKlines(context.Background(), msg.Symbols, msg.Interval, e)
+	if err != nil {
+		e.logger.Error().Err(err).Msg("Failed to subscribe to klines")
+		return
+	}
+
+	// Track subscriptions
 	for _, symbol := range msg.Symbols {
 		e.subscribedKlines[symbol+":"+msg.Interval] = true
 	}
@@ -232,14 +320,77 @@ func (e *ExchangeActor) onSubscribeOrderBook(ctx *actor.Context, msg SubscribeOr
 		e.logger.Error().Msg("Cannot subscribe to order book: not connected")
 		return
 	}
-	
+
 	e.logger.Info().
 		Strs("symbols", msg.Symbols).
 		Msg("Subscribing to order book")
-	
+
+	// Subscribe to order book via exchange WebSocket with this actor as handler
+	err := e.exchange.SubscribeOrderBook(context.Background(), msg.Symbols, e)
+	if err != nil {
+		e.logger.Error().Err(err).Msg("Failed to subscribe to order book")
+		return
+	}
+
 	for _, symbol := range msg.Symbols {
 		e.subscribedOrderBooks[symbol] = true
 	}
+}
+
+// DataHandler interface implementation
+func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
+	e.logger.Debug().
+		Str("symbol", kline.Symbol).
+		Str("interval", kline.Interval).
+		Float64("close", kline.Close).
+		Time("timestamp", kline.Timestamp).
+		Msg("Received kline data")
+
+	// Broadcast to all strategy actors using the actor system
+	msg := KlineDataMsg{Kline: kline}
+	for _, strategyPID := range e.strategyActors {
+		if strategyPID != nil && e.actorSystem != nil {
+			e.actorSystem.Send(strategyPID, msg)
+		}
+	}
+
+	// Update portfolio with current market prices
+	if e.portfolioPID != nil && e.actorSystem != nil {
+		priceUpdate := portfolio.UpdateMarketPricesMsg{
+			Prices: map[string]float64{
+				kline.Symbol: kline.Close,
+			},
+		}
+		e.actorSystem.Send(e.portfolioPID, priceUpdate)
+	}
+}
+
+func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
+	e.logger.Debug().
+		Str("symbol", orderBook.Symbol).
+		Int("bids", len(orderBook.Bids)).
+		Int("asks", len(orderBook.Asks)).
+		Time("timestamp", orderBook.Timestamp).
+		Msg("Received order book data")
+
+	// Broadcast to strategy actors using the actor system
+	msg := OrderBookDataMsg{OrderBook: orderBook}
+	for _, strategyPID := range e.strategyActors {
+		if strategyPID != nil && e.actorSystem != nil {
+			e.actorSystem.Send(strategyPID, msg)
+		}
+	}
+}
+
+func (e *ExchangeActor) OnTicker(ticker *exchanges.Ticker) {
+	e.logger.Debug().
+		Str("symbol", ticker.Symbol).
+		Float64("price", ticker.Price).
+		Float64("volume", ticker.Volume).
+		Time("timestamp", ticker.Timestamp).
+		Msg("Received ticker data")
+
+	// Could be used for real-time price updates
 }
 
 func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
@@ -248,18 +399,31 @@ func (e *ExchangeActor) onGetBalances(ctx *actor.Context) {
 		ctx.Respond(fmt.Errorf("not connected"))
 		return
 	}
-	
+
 	balanceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	balances, err := e.exchange.GetBalances(balanceCtx)
 	if err != nil {
 		e.logger.Error().Err(err).Msg("Failed to get balances")
 		ctx.Respond(err)
 		return
 	}
-	
+
+	// Send response to requester
 	ctx.Respond(balances)
+
+	// Also notify portfolio actor if balances are requested
+	if e.portfolioPID != nil {
+		for _, balance := range balances {
+			portfolioMsg := portfolio.UpdateBalanceMsg{
+				Exchange: e.exchangeName,
+				Asset:    balance.Asset,
+				Amount:   balance.Available,
+			}
+			ctx.Send(e.portfolioPID, portfolioMsg)
+		}
+	}
 }
 
 func (e *ExchangeActor) onGetPositions(ctx *actor.Context) {
@@ -268,57 +432,78 @@ func (e *ExchangeActor) onGetPositions(ctx *actor.Context) {
 		ctx.Respond(fmt.Errorf("not connected"))
 		return
 	}
-	
+
 	positionCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	
+
 	positions, err := e.exchange.GetPositions(positionCtx)
 	if err != nil {
 		e.logger.Error().Err(err).Msg("Failed to get positions")
 		ctx.Respond(err)
 		return
 	}
-	
+
+	// Send response to requester
 	ctx.Respond(positions)
+
+	// Also notify portfolio actor if positions are requested
+	if e.portfolioPID != nil {
+		for _, position := range positions {
+			portfolioMsg := portfolio.UpdatePositionMsg{
+				Exchange: e.exchangeName,
+				Symbol:   position.Symbol,
+				Quantity: position.Size,
+				Price:    position.EntryPrice,
+				Side:     position.Side,
+			}
+			ctx.Send(e.portfolioPID, portfolioMsg)
+		}
+	}
 }
 
 func (e *ExchangeActor) onStatus(ctx *actor.Context) {
 	status := map[string]interface{}{
 		"exchange":              e.exchangeName,
-		"connected":            e.connected,
-		"subscribed_klines":    len(e.subscribedKlines),
+		"connected":             e.connected,
+		"subscribed_klines":     len(e.subscribedKlines),
 		"subscribed_orderbooks": len(e.subscribedOrderBooks),
-		"strategy_actors":      len(e.strategyActors),
-		"timestamp":            time.Now(),
+		"strategy_actors":       len(e.strategyActors),
+		"timestamp":             time.Now(),
 	}
-	
+
 	ctx.Respond(status)
 }
 
 func (e *ExchangeActor) onKlineData(ctx *actor.Context, msg KlineDataMsg) {
-	// Forward kline data to strategy actors
-	for _, strategyPID := range e.strategyActors {
-		ctx.Send(strategyPID, msg)
+	// Forward kline data to strategy actors for the same symbol
+	for strategyKey, strategyPID := range e.strategyActors {
+		// Extract symbol from strategy key (format: "strategy:symbol")
+		if len(strategyKey) > 0 && fmt.Sprintf(":%s", msg.Kline.Symbol) == strategyKey[len(strategyKey)-len(msg.Kline.Symbol)-1:] {
+			ctx.Send(strategyPID, strategy.KlineDataMsg{Kline: msg.Kline})
+		}
 	}
 }
 
 func (e *ExchangeActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg) {
-	// Forward order book data to strategy actors
-	for _, strategyPID := range e.strategyActors {
-		ctx.Send(strategyPID, msg)
+	// Forward order book data to strategy actors for the same symbol
+	for strategyKey, strategyPID := range e.strategyActors {
+		// Extract symbol from strategy key (format: "strategy:symbol")
+		if len(strategyKey) > 0 && fmt.Sprintf(":%s", msg.OrderBook.Symbol) == strategyKey[len(strategyKey)-len(msg.OrderBook.Symbol)-1:] {
+			ctx.Send(strategyPID, strategy.OrderBookDataMsg{OrderBook: msg.OrderBook})
+		}
 	}
 }
 
 // StartStrategy starts a new strategy actor for a symbol
 func (e *ExchangeActor) StartStrategy(ctx *actor.Context, strategyName, symbol string, config map[string]interface{}) error {
 	strategyKey := fmt.Sprintf("%s:%s", strategyName, symbol)
-	
+
 	if _, exists := e.strategyActors[strategyKey]; exists {
 		return fmt.Errorf("strategy %s already running for symbol %s", strategyName, symbol)
 	}
-	
+
 	strategyPID := ctx.SpawnChild(func() actor.Receiver {
-		return strategy.New(
+		strategyActor := strategy.New(
 			strategyName,
 			symbol,
 			e.exchangeName,
@@ -327,13 +512,117 @@ func (e *ExchangeActor) StartStrategy(ctx *actor.Context, strategyName, symbol s
 			e.db,
 			e.logger.With().Str("actor", "strategy").Str("strategy", strategyName).Str("symbol", symbol).Logger(),
 		)
+		// Set parent actor references for communication
+		strategyActor.SetParentActors(e.orderManagerPID, e.riskManagerPID)
+		return strategyActor
 	}, strategyKey)
-	
+
 	e.strategyActors[strategyKey] = strategyPID
 	e.logger.Info().
 		Str("strategy", strategyName).
 		Str("symbol", symbol).
 		Msg("Strategy actor started")
-	
+
 	return nil
+}
+
+// NotifyTradeExecution notifies the portfolio actor when a trade is executed
+func (e *ExchangeActor) NotifyTradeExecution(order *exchanges.Order) {
+	if e.portfolioPID == nil {
+		return
+	}
+
+	// Convert order to trade for portfolio tracking
+	trade := portfolio.Trade{
+		ID:        order.ID,
+		Exchange:  e.exchangeName,
+		Symbol:    order.Symbol,
+		Side:      order.Side,
+		Quantity:  order.Quantity,
+		Price:     order.Price,
+		Fee:       0.0, // Could be calculated based on exchange fees
+		Timestamp: order.Time,
+	}
+
+	msg := portfolio.TradeExecutedMsg{Trade: trade}
+	if e.actorSystem != nil {
+		e.actorSystem.Send(e.portfolioPID, msg)
+	}
+
+	e.logger.Info().
+		Str("order_id", order.ID).
+		Str("symbol", order.Symbol).
+		Str("side", order.Side).
+		Float64("quantity", order.Quantity).
+		Float64("price", order.Price).
+		Msg("Trade execution notified to portfolio")
+}
+
+// Portfolio-specific request handlers
+func (e *ExchangeActor) onPortfolioRequestBalances(ctx *actor.Context) {
+	if !e.connected {
+		e.logger.Error().Msg("Cannot get balances for portfolio: not connected")
+		return
+	}
+
+	e.logger.Debug().Msg("Portfolio requested balances")
+
+	balanceCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	balances, err := e.exchange.GetBalances(balanceCtx)
+	if err != nil {
+		e.logger.Error().Err(err).Msg("Failed to get balances for portfolio")
+		return
+	}
+
+	// Send balance updates to portfolio actor
+	if e.portfolioPID != nil {
+		for _, balance := range balances {
+			portfolioMsg := portfolio.UpdateBalanceMsg{
+				Exchange: e.exchangeName,
+				Asset:    balance.Asset,
+				Amount:   balance.Available,
+			}
+			ctx.Send(e.portfolioPID, portfolioMsg)
+		}
+		e.logger.Debug().
+			Int("balance_count", len(balances)).
+			Msg("Sent balance updates to portfolio")
+	}
+}
+
+func (e *ExchangeActor) onPortfolioRequestPositions(ctx *actor.Context) {
+	if !e.connected {
+		e.logger.Error().Msg("Cannot get positions for portfolio: not connected")
+		return
+	}
+
+	e.logger.Debug().Msg("Portfolio requested positions")
+
+	positionCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	positions, err := e.exchange.GetPositions(positionCtx)
+	if err != nil {
+		e.logger.Error().Err(err).Msg("Failed to get positions for portfolio")
+		return
+	}
+
+	// Send position updates to portfolio actor
+	if e.portfolioPID != nil {
+		for _, position := range positions {
+			portfolioMsg := portfolio.UpdatePositionMsg{
+				Exchange: e.exchangeName,
+				Symbol:   position.Symbol,
+				Quantity: position.Size,
+				Price:    position.EntryPrice,
+				Side:     position.Side,
+			}
+			ctx.Send(e.portfolioPID, portfolioMsg)
+		}
+		e.logger.Debug().
+			Int("position_count", len(positions)).
+			Msg("Sent position updates to portfolio")
+	}
 }

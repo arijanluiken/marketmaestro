@@ -73,6 +73,78 @@ func NewStrategyEngine(logger zerolog.Logger) *StrategyEngine {
 	return engine
 }
 
+// StrategyCallbacks represents which callbacks are available in a strategy
+type StrategyCallbacks struct {
+	HasOnKline     bool
+	HasOnOrderBook bool
+	HasOnTicker    bool
+	HasSettings    bool
+}
+
+// ValidateCallbacks checks which callbacks are available in a strategy script
+func (se *StrategyEngine) ValidateCallbacks(strategyName string) (*StrategyCallbacks, error) {
+	// Load strategy script
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create Starlark thread
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-validate", strategyName),
+	}
+
+	// Prepare minimal globals for script execution
+	globals := starlark.StringDict{}
+	for k, v := range se.builtin {
+		globals[k] = v
+	}
+	globals["config"] = starlark.NewDict(0)
+
+	// Execute strategy to get function definitions
+	result, err := starlark.ExecFile(thread, strategyName, script, globals)
+	if err != nil {
+		return nil, fmt.Errorf("strategy validation failed: %w", err)
+	}
+
+	// Check which callbacks are defined
+	callbacks := &StrategyCallbacks{}
+	
+	if onKlineFn, ok := result["on_kline"]; ok {
+		if _, ok := onKlineFn.(*starlark.Function); ok {
+			callbacks.HasOnKline = true
+		}
+	}
+	
+	if onOrderBookFn, ok := result["on_orderbook"]; ok {
+		if _, ok := onOrderBookFn.(*starlark.Function); ok {
+			callbacks.HasOnOrderBook = true
+		}
+	}
+	
+	if onTickerFn, ok := result["on_ticker"]; ok {
+		if _, ok := onTickerFn.(*starlark.Function); ok {
+			callbacks.HasOnTicker = true
+		}
+	}
+	
+	if settingsFn, ok := result["settings"]; ok {
+		if _, ok := settingsFn.(*starlark.Function); ok {
+			callbacks.HasSettings = true
+		}
+	}
+
+	se.logger.Debug().
+		Str("strategy", strategyName).
+		Bool("has_on_kline", callbacks.HasOnKline).
+		Bool("has_on_orderbook", callbacks.HasOnOrderBook).
+		Bool("has_on_ticker", callbacks.HasOnTicker).
+		Bool("has_settings", callbacks.HasSettings).
+		Msg("Strategy callbacks validated")
+
+	return callbacks, nil
+}
+
 func (se *StrategyEngine) setupBuiltins() {
 	// Add built-in functions
 	se.builtin = starlark.StringDict{
@@ -104,6 +176,39 @@ func (se *StrategyEngine) setupBuiltins() {
 				}
 				return nil, fmt.Errorf("abs() requires a number")
 			}),
+		}),
+		"round": starlark.NewBuiltin("round", func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+			if len(args) < 1 || len(args) > 2 {
+				return nil, fmt.Errorf("round() takes 1 or 2 arguments")
+			}
+			
+			var num float64
+			if x, ok := args[0].(starlark.Float); ok {
+				num = float64(x)
+			} else if x, ok := args[0].(starlark.Int); ok {
+				val, _ := x.Int64()
+				num = float64(val)
+			} else {
+				return nil, fmt.Errorf("round() requires a number")
+			}
+			
+			precision := 0
+			if len(args) == 2 {
+				if p, ok := args[1].(starlark.Int); ok {
+					precision64, _ := p.Int64()
+					precision = int(precision64)
+				} else {
+					return nil, fmt.Errorf("round() precision must be an integer")
+				}
+			}
+			
+			multiplier := math.Pow(10, float64(precision))
+			rounded := math.Round(num*multiplier) / multiplier
+			
+			if precision == 0 {
+				return starlark.MakeInt64(int64(rounded)), nil
+			}
+			return starlark.Float(rounded), nil
 		}),
 		// Technical Indicators
 		"sma":        starlark.NewBuiltin("sma", se.sma),

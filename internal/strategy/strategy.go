@@ -36,9 +36,10 @@ type StrategyActor struct {
 	interval     string // Interval from strategy script
 
 	// Strategy execution
-	engine      *StrategyEngine
-	klineBuffer []*KlineData
-	orderBook   *exchanges.OrderBook
+	engine       *StrategyEngine
+	klineBuffer  []*KlineData
+	orderBook    *exchanges.OrderBook
+	callbacks    *StrategyCallbacks // Cache of available callbacks
 
 	// Parent actor references
 	orderManagerPID *actor.PID
@@ -131,6 +132,21 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 	if s.engine == nil {
 		s.engine = NewStrategyEngine(s.logger)
 	}
+
+	// Validate which callbacks are available in the strategy
+	callbacks, err := s.engine.ValidateCallbacks(s.strategyName)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Failed to validate strategy callbacks")
+		return
+	}
+	s.callbacks = callbacks
+
+	s.logger.Info().
+		Str("strategy", s.strategyName).
+		Bool("has_on_kline", callbacks.HasOnKline).
+		Bool("has_on_orderbook", callbacks.HasOnOrderBook).
+		Bool("has_on_ticker", callbacks.HasOnTicker).
+		Msg("Strategy callbacks validated")
 
 	// Extract interval from strategy script
 	interval, err := s.engine.GetStrategyInterval(s.strategyName)
@@ -352,6 +368,12 @@ func (s *StrategyActor) executeKlineCallback(ctx *actor.Context, kline *exchange
 		return
 	}
 
+	// Check if on_kline callback exists before executing
+	if s.callbacks == nil || !s.callbacks.HasOnKline {
+		s.logger.Debug().Msg("Skipping kline callback - not implemented in strategy")
+		return
+	}
+
 	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
@@ -383,6 +405,12 @@ func (s *StrategyActor) executeOrderBookCallback(ctx *actor.Context, orderBook *
 		return
 	}
 
+	// Check if on_orderbook callback exists before executing
+	if s.callbacks == nil || !s.callbacks.HasOnOrderBook {
+		s.logger.Debug().Msg("Skipping orderbook callback - not implemented in strategy")
+		return
+	}
+
 	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
@@ -411,6 +439,12 @@ func (s *StrategyActor) executeOrderBookCallback(ctx *actor.Context, orderBook *
 // executeTickerCallback executes the strategy using the on_ticker callback
 func (s *StrategyActor) executeTickerCallback(ctx *actor.Context, ticker *exchanges.Ticker) {
 	if !s.running {
+		return
+	}
+
+	// Check if on_ticker callback exists before executing
+	if s.callbacks == nil || !s.callbacks.HasOnTicker {
+		s.logger.Debug().Msg("Skipping ticker callback - not implemented in strategy")
 		return
 	}
 

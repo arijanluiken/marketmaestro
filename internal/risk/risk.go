@@ -380,6 +380,20 @@ func (r *RiskManagerActor) getOrdersToday() int {
 func (r *RiskManagerActor) schedulePeriodicTasks(ctx *actor.Context) {
 	// Reset daily counters at midnight
 	go func() {
+		// Calculate time until next midnight
+		now := time.Now()
+		nextMidnight := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, now.Location())
+		timeUntilMidnight := nextMidnight.Sub(now)
+
+		// Initial timer to reach the next midnight
+		initialTimer := time.NewTimer(timeUntilMidnight)
+
+		select {
+		case <-initialTimer.C:
+			r.resetDailyCounters()
+		}
+
+		// Now start the 24-hour ticker for subsequent resets
 		ticker := time.NewTicker(24 * time.Hour)
 		defer ticker.Stop()
 

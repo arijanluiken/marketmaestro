@@ -89,7 +89,10 @@ func (se *StrategyEngine) setupBuiltins() {
 			}
 			return starlark.MakeInt(starlark.Len(args[0])), nil
 		}),
-		"range": starlark.NewBuiltin("range", se.starlarkBuiltinRange),
+		"get_config": starlark.NewBuiltin("get_config", se.getConfig),
+		"get_state":  starlark.NewBuiltin("get_state", se.getState),
+		"set_state":  starlark.NewBuiltin("set_state", se.setState),
+		"range":      starlark.NewBuiltin("range", se.starlarkBuiltinRange),
 		"math": starlarkstruct.FromStringDict(starlarkstruct.Default, starlark.StringDict{
 			"abs": starlark.NewBuiltin("abs", func(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 				if len(args) != 1 {
@@ -279,6 +282,11 @@ func (se *StrategyEngine) ExecuteStrategy(strategyName string, ctx *StrategyCont
 	// Create Starlark thread
 	thread := &starlark.Thread{
 		Name: fmt.Sprintf("strategy-%s", strategyName),
+	}
+
+	// Set config in thread locals for get_config() function access
+	if ctx.Config != nil {
+		thread.SetLocal("config", se.mapToStarlark(ctx.Config))
 	}
 
 	// Prepare globals with context data
@@ -2680,4 +2688,104 @@ func (se *StrategyEngine) volumeProfile(thread *starlark.Thread, fn *starlark.Bu
 	}
 
 	return profileDict, nil
+}
+
+// getConfig provides a thread-safe way to access configuration values with defaults
+func (se *StrategyEngine) getConfig(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return nil, fmt.Errorf("get_config() takes 1 or 2 arguments (key, default)")
+	}
+
+	// Get the key
+	keyValue, ok := args[0].(starlark.String)
+	if !ok {
+		return nil, fmt.Errorf("get_config() key must be a string")
+	}
+	key := string(keyValue)
+
+	// Get default value if provided
+	var defaultValue starlark.Value = starlark.None
+	if len(args) == 2 {
+		defaultValue = args[1]
+	}
+
+	// Try to get config from thread locals (set during callback execution)
+	if locals := thread.Local("config"); locals != nil {
+		if configDict, ok := locals.(*starlark.Dict); ok {
+			if value, found, _ := configDict.Get(starlark.String(key)); found {
+				return value, nil
+			}
+		}
+	}
+
+	// Return default value if config not found
+	return defaultValue, nil
+}
+
+// getState provides a thread-safe way to access strategy state
+func (se *StrategyEngine) getState(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) < 1 || len(args) > 2 {
+		return nil, fmt.Errorf("get_state() takes 1 or 2 arguments (key, default)")
+	}
+
+	// Get the key
+	keyValue, ok := args[0].(starlark.String)
+	if !ok {
+		return nil, fmt.Errorf("get_state() key must be a string")
+	}
+	key := string(keyValue)
+
+	// Get default value if provided
+	var defaultValue starlark.Value = starlark.None
+	if len(args) == 2 {
+		defaultValue = args[1]
+	}
+
+	// Try to get state from thread locals
+	if locals := thread.Local("strategy_state"); locals != nil {
+		if stateDict, ok := locals.(*starlark.Dict); ok {
+			if value, found, _ := stateDict.Get(starlark.String(key)); found {
+				return value, nil
+			}
+		}
+	}
+
+	// Return default value if state not found
+	return defaultValue, nil
+}
+
+// setState provides a thread-safe way to set strategy state
+func (se *StrategyEngine) setState(thread *starlark.Thread, fn *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
+	if len(args) != 2 {
+		return nil, fmt.Errorf("set_state() takes exactly 2 arguments (key, value)")
+	}
+
+	// Get the key
+	keyValue, ok := args[0].(starlark.String)
+	if !ok {
+		return nil, fmt.Errorf("set_state() key must be a string")
+	}
+	key := string(keyValue)
+	value := args[1]
+
+	// Get or create state dictionary in thread locals
+	var stateDict *starlark.Dict
+	if locals := thread.Local("strategy_state"); locals != nil {
+		if dict, ok := locals.(*starlark.Dict); ok {
+			stateDict = dict
+		}
+	}
+
+	if stateDict == nil {
+		stateDict = starlark.NewDict(10) // Initialize with some capacity
+		thread.SetLocal("strategy_state", stateDict)
+	}
+
+	// Set the value in state
+	err := stateDict.SetKey(starlark.String(key), value)
+	if err != nil {
+		return nil, fmt.Errorf("failed to set state: %w", err)
+	}
+
+	return starlark.None, nil
 }

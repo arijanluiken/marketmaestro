@@ -3,33 +3,57 @@
 # Strategy settings configuration
 def settings():
     return {
-        "interval": "5m",  # Kline interval for this strategy
+        "interval": "5m",  # Default kline interval - can be overridden in config
         "fast_period": 12,
         "slow_period": 26,
         "signal_period": 9,
         "position_size": 0.01
     }
 
-# Strategy state
-state = {
-    "macd_line": [],
-    "signal_line": [],
-    "histogram": [],
-    "klines": [],
-    "last_signal": "hold"
-}
-
-# Initialize strategy parameters
+# Initialize strategy parameters - these will be set from config in callbacks
 params = settings()
-fast_period = config.get("fast_period", params["fast_period"])
-slow_period = config.get("slow_period", params["slow_period"])
-signal_period = config.get("signal_period", params["signal_period"])
-position_size = config.get("position_size", params["position_size"])
+fast_period = params["fast_period"]  # Default values, will be overridden by config
+slow_period = params["slow_period"]
+signal_period = params["signal_period"]
+position_size = params["position_size"]
+
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    return {
+        "fast_period": get_config("fast_period", params["fast_period"]),
+        "slow_period": get_config("slow_period", params["slow_period"]),
+        "signal_period": get_config("signal_period", params["signal_period"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+
+def init_state():
+    """Initialize strategy state using thread-safe state management"""
+    # Initialize state values if they don't exist
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("macd_line", [])
+        set_state("signal_line", [])
+        set_state("histogram", [])
+        set_state("klines", [])
+        set_state("last_signal", "hold")
 
 def on_kline(kline):
     """Called when a new kline is received"""
+    # Initialize state if needed
+    init_state()
+    
+    # Get config values from runtime context
+    cfg = get_config_values()
+    fast_period = cfg["fast_period"]
+    slow_period = cfg["slow_period"]
+    signal_period = cfg["signal_period"]
+    position_size = cfg["position_size"]
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
     # Add new kline to our buffer
-    state["klines"].append({
+    klines.append({
         "timestamp": kline.timestamp,
         "open": kline.open,
         "high": kline.high,
@@ -40,21 +64,24 @@ def on_kline(kline):
     
     # Keep only the klines we need
     max_needed = slow_period + signal_period + 20
-    if len(state["klines"]) > max_needed:
-        state["klines"] = state["klines"][-max_needed:]
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    # Update state
+    set_state("klines", klines)
     
     # Extract close prices
-    closes = [k["close"] for k in state["klines"]]
+    closes = [k["close"] for k in klines]
     
     # Calculate MACD
     if len(closes) >= slow_period + signal_period:
         macd_result = macd(closes, fast_period, slow_period, signal_period)
-        state["macd_line"] = macd_result["macd"]
-        state["signal_line"] = macd_result["signal"]
-        state["histogram"] = macd_result["histogram"]
+        set_state("macd_line", macd_result["macd"])
+        set_state("signal_line", macd_result["signal"])
+        set_state("histogram", macd_result["histogram"])
     
     # Check for trading signals
-    return check_signals(closes)
+    return check_signals(closes, cfg)
 
 def on_orderbook(orderbook):
     """Called when orderbook data is received"""
@@ -80,9 +107,12 @@ def on_ticker(ticker):
         "reason": "No ticker signal"
     }
 
-def check_signals(closes):
+def check_signals(closes, cfg):
     """Check for MACD signals"""
-    if len(state["macd_line"]) < 2 or len(state["signal_line"]) < 2:
+    macd_line = get_state("macd_line", [])
+    signal_line = get_state("signal_line", [])
+    
+    if len(macd_line) < 2 or len(signal_line) < 2:
         return {
             "action": "hold",
             "quantity": 0.0,
@@ -92,20 +122,20 @@ def check_signals(closes):
         }
     
     # Get current and previous values
-    current_macd = state["macd_line"][-1]
-    current_signal = state["signal_line"][-1]
-    prev_macd = state["macd_line"][-2]
-    prev_signal = state["signal_line"][-2]
+    current_macd = macd_line[-1]
+    current_signal = signal_line[-1]
+    prev_macd = macd_line[-2]
+    prev_signal = signal_line[-2]
     current_price = closes[-1]
     
     # Check for bullish crossover (MACD crosses above signal) below zero line
     if prev_macd <= prev_signal and current_macd > current_signal and current_macd < 0:
         reason = "MACD bullish crossover below zero line"
         log("BUY signal: " + reason)
-        state["last_signal"] = "buy"
+        set_state("last_signal", "buy")
         return {
             "action": "buy",
-            "quantity": position_size,
+            "quantity": cfg["position_size"],
             "price": current_price,
             "type": "market",
             "reason": reason
@@ -115,10 +145,10 @@ def check_signals(closes):
     elif prev_macd >= prev_signal and current_macd < current_signal and current_macd > 0:
         reason = "MACD bearish crossover above zero line"
         log("SELL signal: " + reason)
-        state["last_signal"] = "sell"
+        set_state("last_signal", "sell")
         return {
             "action": "sell",
-            "quantity": position_size,
+            "quantity": cfg["position_size"],
             "price": current_price,
             "type": "market",
             "reason": reason

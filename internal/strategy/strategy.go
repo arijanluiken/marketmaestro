@@ -181,13 +181,28 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 		Msg("Strategy callbacks validated")
 
 	// Extract interval from strategy script
-	interval, err := s.engine.GetStrategyInterval(s.strategyName)
+	defaultInterval, err := s.engine.GetStrategyInterval(s.strategyName)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("Failed to get strategy interval, using default")
 		s.addLog("warning", fmt.Sprintf("Failed to get strategy interval, using default: %v", err), nil)
-		interval = "1m" // Default fallback
+		defaultInterval = "1m" // Default fallback
 	}
-	s.interval = interval
+
+	// Check for interval override in config
+	if configInterval, exists := s.config["interval"]; exists {
+		if intervalStr, ok := configInterval.(string); ok && intervalStr != "" {
+			s.interval = intervalStr
+			s.logger.Info().
+				Str("strategy", s.strategyName).
+				Str("default_interval", defaultInterval).
+				Str("config_interval", intervalStr).
+				Msg("Using interval from config override")
+		} else {
+			s.interval = defaultInterval
+		}
+	} else {
+		s.interval = defaultInterval
+	}
 
 	s.logger.Debug().
 		Str("strategy", s.strategyName).

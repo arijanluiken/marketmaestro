@@ -1,22 +1,47 @@
 # Support and Resistance Strategy
 # Uses Pivot Points and Fibonacci levels for trading decisions
-# Updated to use callback-provided data instead of global variables
+# Updated to use thread-safe state management
 
-state = {
-    "klines": []
-}
-
+# Strategy settings configuration
 def settings():
     return {
-        "interval": "15m",
+        "interval": "15m",  # Default kline interval - can be overridden in config
         "lookback_period": 20,
         "position_size": 0.01
     }
 
+# Initialize strategy parameters - these will be set from config in callbacks
+params = settings()
+lookback_period = params["lookback_period"]  # Default values, will be overridden by config
+position_size = params["position_size"]
+
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    return {
+        "lookback_period": get_config("lookback_period", params["lookback_period"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+
+def init_state():
+    """Initialize strategy state using thread-safe state management"""
+    # Initialize state values if they don't exist
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+
 def on_kline(kline):
     """Called when a new kline is received"""
+    # Initialize state if needed
+    init_state()
+    
+    # Get config values from runtime context
+    cfg = get_config_values()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
     # Add new kline to internal buffer
-    state["klines"].append({
+    klines.append({
         "timestamp": kline.timestamp,
         "open": kline.open,
         "high": kline.high,
@@ -27,17 +52,20 @@ def on_kline(kline):
     
     # Keep only what we need for calculations (prevent memory buildup)
     max_needed = 100  # Keep 100 klines for calculations
-    if len(state["klines"]) > max_needed:
-        state["klines"] = state["klines"][-max_needed:]
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    # Update state
+    set_state("klines", klines)
     
     # Check if we have enough data
-    if len(state["klines"]) < 20:
+    if len(klines) < 20:
         return {"action": "hold", "reason": "not enough data points"}
     
     # Extract price arrays from internal buffer
-    highs = [k["high"] for k in state["klines"]]
-    lows = [k["low"] for k in state["klines"]]
-    closes = [k["close"] for k in state["klines"]]
+    highs = [k["high"] for k in klines]
+    lows = [k["low"] for k in klines]
+    closes = [k["close"] for k in klines]
     
     # Calculate indicators
     
@@ -100,7 +128,7 @@ def on_kline(kline):
         return abs(price - level) <= tolerance
     
     # Strategy Logic
-    position_size = config.get("position_size", 0.01)
+    position_size = cfg["position_size"]
     
     # Buy conditions - price near support in uptrend
     if trend == "bullish" and current_rsi < 70:

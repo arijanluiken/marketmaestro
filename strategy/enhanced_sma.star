@@ -3,7 +3,7 @@
 # Strategy settings configuration with advanced order management
 def settings():
     return {
-        "interval": "1m",  # Kline interval for this strategy
+        "interval": "1m",  # Default kline interval - can be overridden in config
         "short_period": 10,
         "long_period": 20,
         "position_size": 0.01,
@@ -13,30 +13,60 @@ def settings():
         "take_profit_percent": 3.0  # 3% take profit
     }
 
-# Strategy state
-state = {
-    "short_ma": [],
-    "long_ma": [],
-    "klines": [],
-    "last_signal": "hold",
-    "active_position": None,
-    "entry_price": 0.0
-}
-
-# Initialize strategy parameters
+# Initialize strategy parameters - these will be set from config in callbacks
 params = settings()
-short_period = config.get("short_period", params["short_period"])
-long_period = config.get("long_period", params["long_period"])
-position_size = config.get("position_size", params["position_size"])
-use_trailing_stops = config.get("use_trailing_stops", params["use_trailing_stops"])
-trail_percent = config.get("trail_percent", params["trail_percent"])
-stop_loss_percent = config.get("stop_loss_percent", params["stop_loss_percent"])
-take_profit_percent = config.get("take_profit_percent", params["take_profit_percent"])
+short_period = params["short_period"]  # Default values, will be overridden by config
+long_period = params["long_period"]
+position_size = params["position_size"]
+use_trailing_stops = params["use_trailing_stops"]
+trail_percent = params["trail_percent"]
+stop_loss_percent = params["stop_loss_percent"]
+take_profit_percent = params["take_profit_percent"]
+
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    return {
+        "short_period": get_config("short_period", params["short_period"]),
+        "long_period": get_config("long_period", params["long_period"]),
+        "position_size": get_config("position_size", params["position_size"]),
+        "use_trailing_stops": get_config("use_trailing_stops", params["use_trailing_stops"]),
+        "trail_percent": get_config("trail_percent", params["trail_percent"]),
+        "stop_loss_percent": get_config("stop_loss_percent", params["stop_loss_percent"]),
+        "take_profit_percent": get_config("take_profit_percent", params["take_profit_percent"])
+    }
+
+def init_state():
+    """Initialize strategy state using thread-safe state management"""
+    # Initialize state values if they don't exist
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("short_ma", [])
+        set_state("long_ma", [])
+        set_state("klines", [])
+        set_state("last_signal", "hold")
+        set_state("active_position", None)
+        set_state("entry_price", 0.0)
 
 def on_kline(kline):
     """Called when a new kline is received"""
+    # Initialize state if needed
+    init_state()
+    
+    # Get config values from runtime context
+    cfg = get_config_values()
+    short_period = cfg["short_period"]
+    long_period = cfg["long_period"]
+    position_size = cfg["position_size"]
+    use_trailing_stops = cfg["use_trailing_stops"]
+    trail_percent = cfg["trail_percent"]
+    stop_loss_percent = cfg["stop_loss_percent"]
+    take_profit_percent = cfg["take_profit_percent"]
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
     # Add new kline to our buffer
-    state["klines"].append({
+    klines.append({
         "timestamp": kline.timestamp,
         "open": kline.open,
         "high": kline.high,
@@ -47,21 +77,26 @@ def on_kline(kline):
     
     # Keep only the klines we need
     max_needed = max(short_period, long_period) + 10
-    if len(state["klines"]) > max_needed:
-        state["klines"] = state["klines"][-max_needed:]
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    # Update state
+    set_state("klines", klines)
     
     # Extract close prices
-    closes = [k["close"] for k in state["klines"]]
+    closes = [k["close"] for k in klines]
     
     # Calculate moving averages
     if len(closes) >= short_period:
-        state["short_ma"] = sma(closes, short_period)
+        short_ma = sma(closes, short_period)
+        set_state("short_ma", short_ma)
     
     if len(closes) >= long_period:
-        state["long_ma"] = sma(closes, long_period)
+        long_ma = sma(closes, long_period)
+        set_state("long_ma", long_ma)
     
     # Check for trading signals
-    return check_signals(closes)
+    return check_signals(closes, cfg)
 
 def on_orderbook(orderbook):
     """Called when orderbook data is received"""
@@ -115,9 +150,12 @@ def on_ticker(ticker):
         "reason": "No ticker signal"
     }
 
-def check_signals(closes):
+def check_signals(closes, cfg):
     """Check for crossover signals with advanced order management"""
-    if len(state["short_ma"]) < 2 or len(state["long_ma"]) < 2:
+    short_ma = get_state("short_ma", [])
+    long_ma = get_state("long_ma", [])
+    
+    if len(short_ma) < 2 or len(long_ma) < 2:
         return {
             "action": "hold",
             "quantity": 0.0,
@@ -127,38 +165,38 @@ def check_signals(closes):
         }
     
     # Get current and previous values
-    current_short = state["short_ma"][-1]
-    current_long = state["long_ma"][-1]
-    prev_short = state["short_ma"][-2]
-    prev_long = state["long_ma"][-2]
+    current_short = short_ma[-1]
+    current_long = long_ma[-1]
+    prev_short = short_ma[-2]
+    prev_long = long_ma[-2]
     current_price = closes[-1]
     
     # Check for bullish crossover (short MA crosses above long MA)
     if prev_short <= prev_long and current_short > current_long:
         reason = "Short MA (" + str(round(current_short, 2)) + ") crossed above Long MA (" + str(round(current_long, 2)) + ")"
         log("BUY signal: " + reason)
-        state["last_signal"] = "buy"
-        state["active_position"] = "long"
-        state["entry_price"] = current_price
+        set_state("last_signal", "buy")
+        set_state("active_position", "long")
+        set_state("entry_price", current_price)
         
-        if use_trailing_stops:
+        if cfg["use_trailing_stops"]:
             # Use trailing stop for dynamic risk management
             return {
                 "action": "buy",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "price": current_price,
                 "type": "market",
                 "reason": reason,
-                "trail_percent": trail_percent,
+                "trail_percent": cfg["trail_percent"],
                 "stop_loss": "trailing"
             }
         else:
             # Use fixed stop loss
-            stop_price = current_price * (1 - stop_loss_percent / 100)
-            take_profit_price = current_price * (1 + take_profit_percent / 100)
+            stop_price = current_price * (1 - cfg["stop_loss_percent"] / 100)
+            take_profit_price = current_price * (1 + cfg["take_profit_percent"] / 100)
             return {
                 "action": "buy",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "price": current_price,
                 "type": "market",
                 "reason": reason,
@@ -171,28 +209,28 @@ def check_signals(closes):
     elif prev_short >= prev_long and current_short < current_long:
         reason = "Short MA (" + str(round(current_short, 2)) + ") crossed below Long MA (" + str(round(current_long, 2)) + ")"
         log("SELL signal: " + reason)
-        state["last_signal"] = "sell"
-        state["active_position"] = "short"
-        state["entry_price"] = current_price
+        set_state("last_signal", "sell")
+        set_state("active_position", "short")
+        set_state("entry_price", current_price)
         
-        if use_trailing_stops:
+        if cfg["use_trailing_stops"]:
             # Use trailing stop for dynamic risk management
             return {
                 "action": "sell",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "price": current_price,
                 "type": "market",
                 "reason": reason,
-                "trail_percent": trail_percent,
+                "trail_percent": cfg["trail_percent"],
                 "stop_loss": "trailing"
             }
         else:
             # Use fixed stop loss
-            stop_price = current_price * (1 + stop_loss_percent / 100)  # Stop above for short
-            take_profit_price = current_price * (1 - take_profit_percent / 100)
+            stop_price = current_price * (1 + cfg["stop_loss_percent"] / 100)  # Stop above for short
+            take_profit_price = current_price * (1 - cfg["take_profit_percent"] / 100)
             return {
                 "action": "sell",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "price": current_price,
                 "type": "market",
                 "reason": reason,
@@ -202,8 +240,10 @@ def check_signals(closes):
             }
     
     # Check for position management signals
-    if state["active_position"] and state["entry_price"] > 0:
-        return check_position_management(current_price)
+    active_position = get_state("active_position", None)
+    entry_price = get_state("entry_price", 0.0)
+    if active_position and entry_price > 0:
+        return check_position_management(current_price, cfg)
     
     # No signal
     return {
@@ -214,19 +254,22 @@ def check_signals(closes):
         "reason": "No crossover detected"
     }
 
-def check_position_management(current_price):
+def check_position_management(current_price, cfg):
     """Check if we need to manage existing positions"""
-    if state["active_position"] == "long":
+    active_position = get_state("active_position", None)
+    entry_price = get_state("entry_price", 0.0)
+    
+    if active_position == "long":
         # Check if we're in profit and should tighten stops
-        profit_percent = ((current_price - state["entry_price"]) / state["entry_price"]) * 100
+        profit_percent = ((current_price - entry_price) / entry_price) * 100
         
-        if profit_percent > take_profit_percent:
+        if profit_percent > cfg["take_profit_percent"]:
             log("Taking profit at " + str(round(profit_percent, 2)) + "% gain")
-            state["active_position"] = None
-            state["entry_price"] = 0.0
+            set_state("active_position", None)
+            set_state("entry_price", 0.0)
             return {
                 "action": "sell",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "price": current_price,
                 "type": "market",
                 "reason": "Take profit at " + str(round(profit_percent, 2)) + "% gain"
@@ -239,20 +282,20 @@ def check_position_management(current_price):
                 "price": current_price,
                 "type": "market",
                 "reason": "Tightening trailing stop - profit: " + str(round(profit_percent, 2)) + "%",
-                "trail_percent": trail_percent * 0.5  # Tighten to 1%
+                "trail_percent": cfg["trail_percent"] * 0.5  # Tighten to 1%
             }
     
-    elif state["active_position"] == "short":
+    elif active_position == "short":
         # Check short position management
-        profit_percent = ((state["entry_price"] - current_price) / state["entry_price"]) * 100
+        profit_percent = ((entry_price - current_price) / entry_price) * 100
         
-        if profit_percent > take_profit_percent:
+        if profit_percent > cfg["take_profit_percent"]:
             log("Taking profit on short at " + str(round(profit_percent, 2)) + "% gain")
-            state["active_position"] = None
-            state["entry_price"] = 0.0
+            set_state("active_position", None)
+            set_state("entry_price", 0.0)
             return {
                 "action": "buy",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "price": current_price,
                 "type": "market",
                 "reason": "Take profit on short at " + str(round(profit_percent, 2)) + "% gain"
@@ -265,7 +308,7 @@ def check_position_management(current_price):
                 "price": current_price,
                 "type": "market",
                 "reason": "Tightening trailing stop on short - profit: " + str(round(profit_percent, 2)) + "%",
-                "trail_percent": trail_percent * 0.5  # Tighten to 1%
+                "trail_percent": cfg["trail_percent"] * 0.5  # Tighten to 1%
             }
     
     return {

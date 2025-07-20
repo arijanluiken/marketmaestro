@@ -4,7 +4,7 @@
 # Strategy settings configuration
 def settings():
     return {
-        "interval": "5m",  # Kline interval for this strategy
+        "interval": "5m",  # Default kline interval - can be overridden in config
         "rsi_period": 14,
         "rsi_oversold": 30,
         "rsi_overbought": 70,
@@ -23,36 +23,68 @@ def settings():
         "position_size": 0.01
     }
 
-# Strategy state
-state = {
-    "klines": [],
-    "last_signal": "hold",
-    "indicators": {}
-}
-
-# Initialize strategy parameters
+# Initialize strategy parameters - these will be set from config in callbacks
 params = settings()
-rsi_period = config.get("rsi_period", params["rsi_period"])
-rsi_oversold = config.get("rsi_oversold", params["rsi_oversold"])
-rsi_overbought = config.get("rsi_overbought", params["rsi_overbought"])
-atr_period = config.get("atr_period", params["atr_period"])
-cci_period = config.get("cci_period", params["cci_period"])
-cci_oversold = config.get("cci_oversold", params["cci_oversold"])
-cci_overbought = config.get("cci_overbought", params["cci_overbought"])
-williams_r_period = config.get("williams_r_period", params["williams_r_period"])
-williams_r_oversold = config.get("williams_r_oversold", params["williams_r_oversold"])
-williams_r_overbought = config.get("williams_r_overbought", params["williams_r_overbought"])
-mfi_period = config.get("mfi_period", params["mfi_period"])
-mfi_oversold = config.get("mfi_oversold", params["mfi_oversold"])
-mfi_overbought = config.get("mfi_overbought", params["mfi_overbought"])
-roc_period = config.get("roc_period", params["roc_period"])
-volatility_threshold = config.get("volatility_threshold", params["volatility_threshold"])
-position_size = config.get("position_size", params["position_size"])
+rsi_period = params["rsi_period"]  # Default values, will be overridden by config
+rsi_oversold = params["rsi_oversold"]
+rsi_overbought = params["rsi_overbought"]
+atr_period = params["atr_period"]
+cci_period = params["cci_period"]
+cci_oversold = params["cci_oversold"]
+cci_overbought = params["cci_overbought"]
+williams_r_period = params["williams_r_period"]
+williams_r_oversold = params["williams_r_oversold"]
+williams_r_overbought = params["williams_r_overbought"]
+mfi_period = params["mfi_period"]
+mfi_oversold = params["mfi_oversold"]
+mfi_overbought = params["mfi_overbought"]
+roc_period = params["roc_period"]
+volatility_threshold = params["volatility_threshold"]
+position_size = params["position_size"]
+
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    return {
+        "rsi_period": get_config("rsi_period", params["rsi_period"]),
+        "rsi_oversold": get_config("rsi_oversold", params["rsi_oversold"]),
+        "rsi_overbought": get_config("rsi_overbought", params["rsi_overbought"]),
+        "atr_period": get_config("atr_period", params["atr_period"]),
+        "cci_period": get_config("cci_period", params["cci_period"]),
+        "cci_oversold": get_config("cci_oversold", params["cci_oversold"]),
+        "cci_overbought": get_config("cci_overbought", params["cci_overbought"]),
+        "williams_r_period": get_config("williams_r_period", params["williams_r_period"]),
+        "williams_r_oversold": get_config("williams_r_oversold", params["williams_r_oversold"]),
+        "williams_r_overbought": get_config("williams_r_overbought", params["williams_r_overbought"]),
+        "mfi_period": get_config("mfi_period", params["mfi_period"]),
+        "mfi_oversold": get_config("mfi_oversold", params["mfi_oversold"]),
+        "mfi_overbought": get_config("mfi_overbought", params["mfi_overbought"]),
+        "roc_period": get_config("roc_period", params["roc_period"]),
+        "volatility_threshold": get_config("volatility_threshold", params["volatility_threshold"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+
+def init_state():
+    """Initialize strategy state using thread-safe state management"""
+    # Initialize state values if they don't exist
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+        set_state("last_signal", "hold")
+        set_state("indicators", {})
 
 def on_kline(kline):
     """Called when a new kline is received"""
+    # Initialize state if needed
+    init_state()
+    
+    # Get config values from runtime context
+    cfg = get_config_values()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
     # Add new kline to our buffer
-    state["klines"].append({
+    klines.append({
         "timestamp": kline.timestamp,
         "open": kline.open,
         "high": kline.high,
@@ -62,60 +94,70 @@ def on_kline(kline):
     })
     
     # Keep only the klines we need
-    max_needed = max(rsi_period, atr_period, cci_period, williams_r_period, mfi_period, roc_period) + 20
-    if len(state["klines"]) > max_needed:
-        state["klines"] = state["klines"][-max_needed:]
+    max_needed = max(cfg["rsi_period"], cfg["atr_period"], cfg["cci_period"], cfg["williams_r_period"], cfg["mfi_period"], cfg["roc_period"]) + 20
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    # Update state
+    set_state("klines", klines)
     
     # Extract price and volume data
-    closes = [k["close"] for k in state["klines"]]
-    highs = [k["high"] for k in state["klines"]]
-    lows = [k["low"] for k in state["klines"]]
-    volumes = [k["volume"] for k in state["klines"]]
+    closes = [k["close"] for k in klines]
+    highs = [k["high"] for k in klines]
+    lows = [k["low"] for k in klines]
+    volumes = [k["volume"] for k in klines]
     
     # Calculate indicators if we have enough data
     if len(closes) >= max_needed - 10:
-        calculate_indicators(closes, highs, lows, volumes)
+        calculate_indicators(closes, highs, lows, volumes, cfg)
     
     # Check for trading signals
-    return check_signals(closes[-1] if closes else 0)
+    return check_signals(closes[-1] if closes else 0, cfg)
 
-def calculate_indicators(closes, highs, lows, volumes):
+def calculate_indicators(closes, highs, lows, volumes, cfg):
     """Calculate all technical indicators"""
+    indicators = get_state("indicators", {})
+    
     # Calculate RSI
-    if len(closes) >= rsi_period:
-        state["indicators"]["rsi"] = rsi(closes, rsi_period)
+    if len(closes) >= cfg["rsi_period"]:
+        indicators["rsi"] = rsi(closes, cfg["rsi_period"])
     
     # Calculate ATR for volatility filter
-    if len(closes) >= atr_period:
-        state["indicators"]["atr"] = atr(highs, lows, closes, atr_period)
+    if len(closes) >= cfg["atr_period"]:
+        indicators["atr"] = atr(highs, lows, closes, cfg["atr_period"])
     
     # Calculate CCI
-    if len(closes) >= cci_period:
-        state["indicators"]["cci"] = cci(highs, lows, closes, cci_period)
+    if len(closes) >= cfg["cci_period"]:
+        indicators["cci"] = cci(highs, lows, closes, cfg["cci_period"])
     
     # Calculate Williams %R
-    if len(closes) >= williams_r_period:
-        state["indicators"]["williams_r"] = williams_r(highs, lows, closes, williams_r_period)
+    if len(closes) >= cfg["williams_r_period"]:
+        indicators["williams_r"] = williams_r(highs, lows, closes, cfg["williams_r_period"])
     
     # Calculate MFI (Money Flow Index)
-    if len(volumes) >= mfi_period and len(closes) >= mfi_period:
-        state["indicators"]["mfi"] = mfi(highs, lows, closes, volumes, mfi_period)
+    if len(volumes) >= cfg["mfi_period"] and len(closes) >= cfg["mfi_period"]:
+        indicators["mfi"] = mfi(highs, lows, closes, volumes, cfg["mfi_period"])
     
     # Calculate Rate of Change
-    if len(closes) >= roc_period:
-        state["indicators"]["roc"] = roc(closes, roc_period)
+    if len(closes) >= cfg["roc_period"]:
+        indicators["roc"] = roc(closes, cfg["roc_period"])
     
     # Calculate VWAP
     if len(volumes) > 0:
-        state["indicators"]["vwap"] = vwap(highs, lows, closes, volumes)
+        indicators["vwap"] = vwap(highs, lows, closes, volumes)
     
     # Calculate Standard Deviation for volatility analysis
     if len(closes) >= 20:
-        state["indicators"]["stddev"] = stddev(closes, 20)
+        indicators["stddev"] = stddev(closes, 20)
+    
+    # Update state
+    set_state("indicators", indicators)
 
-def check_signals(current_price):
+def check_signals(current_price, cfg):
     """Check for trading signals using multiple indicators"""
-    if not state["indicators"]:
+    indicators = get_state("indicators", {})
+    
+    if not indicators:
         return {
             "action": "hold",
             "quantity": 0.0,
@@ -125,25 +167,25 @@ def check_signals(current_price):
         }
     
     # Get current indicator values
-    current_rsi = get_last_value("rsi")
-    current_atr = get_last_value("atr")
-    current_cci = get_last_value("cci")
-    current_williams_r = get_last_value("williams_r")
-    current_mfi = get_last_value("mfi")
-    current_roc = get_last_value("roc")
-    current_vwap = get_last_value("vwap")
-    current_stddev = get_last_value("stddev")
+    current_rsi = get_last_value("rsi", indicators)
+    current_atr = get_last_value("atr", indicators)
+    current_cci = get_last_value("cci", indicators)
+    current_williams_r = get_last_value("williams_r", indicators)
+    current_mfi = get_last_value("mfi", indicators)
+    current_roc = get_last_value("roc", indicators)
+    current_vwap = get_last_value("vwap", indicators)
+    current_stddev = get_last_value("stddev", indicators)
     
     # Volatility filter - only trade when volatility is reasonable
     if current_atr and current_stddev:
         volatility_ratio = current_atr / (current_price / 100)  # ATR as percentage of price
-        if volatility_ratio > volatility_threshold:
+        if volatility_ratio > cfg["volatility_threshold"]:
             return {
                 "action": "hold",
                 "quantity": 0.0,
                 "price": current_price,
                 "type": "market",
-                "reason": "High volatility - ATR ratio: " + str(round(volatility_ratio, 2))
+                "reason": "High volatility - ATR ratio: " + str(round(volatility_ratio, 3))
             }
     
     # Multi-indicator bullish signals
@@ -153,37 +195,37 @@ def check_signals(current_price):
     
     # RSI analysis
     if current_rsi is not None:
-        if current_rsi < rsi_oversold:
+        if current_rsi < cfg["rsi_oversold"]:
             bullish_signals += 1
             signal_reasons.append("RSI oversold (" + str(round(current_rsi, 1)) + ")")
-        elif current_rsi > rsi_overbought:
+        elif current_rsi > cfg["rsi_overbought"]:
             bearish_signals += 1
             signal_reasons.append("RSI overbought (" + str(round(current_rsi, 1)) + ")")
     
     # CCI analysis
     if current_cci is not None:
-        if current_cci < cci_oversold:
+        if current_cci < cfg["cci_oversold"]:
             bullish_signals += 1
             signal_reasons.append("CCI oversold (" + str(round(current_cci, 1)) + ")")
-        elif current_cci > cci_overbought:
+        elif current_cci > cfg["cci_overbought"]:
             bearish_signals += 1
             signal_reasons.append("CCI overbought (" + str(round(current_cci, 1)) + ")")
     
     # Williams %R analysis
     if current_williams_r is not None:
-        if current_williams_r < williams_r_oversold:
+        if current_williams_r < cfg["williams_r_oversold"]:
             bullish_signals += 1
             signal_reasons.append("Williams %R oversold (" + str(round(current_williams_r, 1)) + ")")
-        elif current_williams_r > williams_r_overbought:
+        elif current_williams_r > cfg["williams_r_overbought"]:
             bearish_signals += 1
             signal_reasons.append("Williams %R overbought (" + str(round(current_williams_r, 1)) + ")")
     
     # MFI analysis (volume-weighted momentum)
     if current_mfi is not None:
-        if current_mfi < mfi_oversold:
+        if current_mfi < cfg["mfi_oversold"]:
             bullish_signals += 1
             signal_reasons.append("MFI oversold (" + str(round(current_mfi, 1)) + ")")
-        elif current_mfi > mfi_overbought:
+        elif current_mfi > cfg["mfi_overbought"]:
             bearish_signals += 1
             signal_reasons.append("MFI overbought (" + str(round(current_mfi, 1)) + ")")
     
@@ -211,10 +253,10 @@ def check_signals(current_price):
     if bullish_signals >= signal_threshold and bullish_signals > bearish_signals:
         reason = "Multiple bullish signals: " + ", ".join(signal_reasons)
         log("BUY signal: " + reason)
-        state["last_signal"] = "buy"
+        set_state("last_signal", "buy")
         return {
             "action": "buy",
-            "quantity": position_size,
+            "quantity": cfg["position_size"],
             "price": current_price,
             "type": "market",
             "reason": reason
@@ -223,10 +265,10 @@ def check_signals(current_price):
     elif bearish_signals >= signal_threshold and bearish_signals > bullish_signals:
         reason = "Multiple bearish signals: " + ", ".join(signal_reasons)
         log("SELL signal: " + reason)
-        state["last_signal"] = "sell"
+        set_state("last_signal", "sell")
         return {
             "action": "sell",
-            "quantity": position_size,
+            "quantity": cfg["position_size"],
             "price": current_price,
             "type": "market",
             "reason": reason
@@ -241,12 +283,12 @@ def check_signals(current_price):
         "reason": "No consensus signal (Bull: " + str(bullish_signals) + ", Bear: " + str(bearish_signals) + ")"
     }
 
-def get_last_value(indicator_name):
+def get_last_value(indicator_name, indicators):
     """Get the last value of an indicator, handling None/empty cases"""
-    if indicator_name not in state["indicators"]:
+    if indicator_name not in indicators:
         return None
     
-    indicator_values = state["indicators"][indicator_name]
+    indicator_values = indicators[indicator_name]
     if not indicator_values or len(indicator_values) == 0:
         return None
     

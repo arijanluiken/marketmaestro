@@ -1,5 +1,9 @@
 # MarketMaestro Trading Bot - AI Agent Instructions
 
+Ensure unit tests are written for all new features and changes. This is crucial for maintaining the integrity of the trading bot and ensuring that new features do not introduce bugs or regressions.
+
+Execute the unit tests after implementing new features or changes to verify that everything works as expected. This helps catch issues early in the development process.
+
 ## Architecture Overview
 
 # MarketMaestro Trading Bot - AI Agent Instructions

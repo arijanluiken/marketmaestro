@@ -22,32 +22,35 @@ exchanges:
         strategies:
           - name: "simple_sma"
             config:
-              short_period: 10
-              long_period: 20
-              position_size: 0.01
-              interval: "1m"  # 1-minute candles for fast SMA signals
+              # Override default strategy parameters
+              short_period: 10      # Default: 10
+              long_period: 20       # Default: 20
+              position_size: 0.01   # Default: 0.01
+              interval: "1m"        # Override default: 1m candles for fast SMA signals
           - name: "rsi_strategy"
             config:
-              period: 14
-              oversold: 30
-              overbought: 70
-              position_size: 0.005
-              interval: "15m"  # 15-minute candles for RSI analysis
+              # Override default strategy parameters
+              period: 14            # Default: 14
+              oversold: 30          # Default: 30
+              overbought: 70        # Default: 70
+              position_size: 0.005  # Override default: smaller position
+              interval: "15m"       # Override default: 15m candles for RSI analysis
       - symbol: "ADAUSDT"
         strategies:
           # Temporarily disabled due to validation issues
           # - name: "super_trend"
           #   config:
           #     position_size: 0.005
-          #     interval: "15m"  # 15-minute candles for RSI analysis
+          #     interval: "15m"
       - symbol: "ETHUSDT"
         strategies:
           - name: "simple_sma"
             config:
-              short_period: 5
-              long_period: 15
-              position_size: 0.1
-              interval: "5m"  # 5-minute candles for ETH trading
+              # Different parameters for ETH trading
+              short_period: 5       # Faster signals for ETH
+              long_period: 15       # Shorter long period
+              position_size: 0.1    # Larger position for ETH
+              interval: "5m"        # 5-minute candles for ETH trading
   
   bitvavo:
     enabled: false
@@ -65,3 +68,26 @@ strategies:
   directory: "./strategies"
   default_interval: "1m"
   max_concurrent: 10
+  
+  # Global default parameters (can be overridden per strategy)
+  defaults:
+    interval: "1m"          # Default timeframe for all strategies
+    position_size: 0.01     # Default position size (1% of balance)
+    risk_level: "medium"    # Global risk management level
+    
+    # SMA strategy defaults
+    sma:
+      short_period: 10
+      long_period: 20
+      
+    # RSI strategy defaults  
+    rsi:
+      period: 14
+      oversold: 30
+      overbought: 70
+      
+    # MACD strategy defaults
+    macd:
+      fast_period: 12
+      slow_period: 26
+      signal_period: 9

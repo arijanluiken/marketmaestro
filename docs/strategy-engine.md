@@ -1,29 +1,33 @@
-# Mercantile Strategy Engine Documentation
+# MarketMaestro Strategy Engine Documentation
 
-The Mercantile trading bot uses a powerful **Starlark-based strategy engine** that allows you to write trading strategies in a Python-like scripting language. This document provides comprehensive documentation of all functions, variables, and patterns available to strategy developers.
+The MarketMaestro trading bot uses a powerful **Starlark-based strategy engine** that allows you to write trading strategies in a Python-like scripting language. This document provides comprehensive documentation of all functions, variables, and patterns available to strategy developers.
 
 ## Table of Contents
 1. [Strategy Engine Overview](#strategy-engine-overview)
 2. [Required Strategy Functions](#required-strategy-functions)
-3. [Global Variables](#global-variables)
-4. [Built-in Functions](#built-in-functions)
-5. [Technical Indicators](#technical-indicators)
-6. [Utility Functions](#utility-functions)
-7. [Signal Return Format](#signal-return-format)
-8. [Data Structures](#data-structures)
-9. [Best Practices](#best-practices)
-10. [Complete Examples](#complete-examples)
-11. [Error Handling](#error-handling)
+3. [Thread-Safe Architecture](#thread-safe-architecture)
+4. [Configuration Management](#configuration-management)
+5. [State Management](#state-management)
+6. [Built-in Functions](#built-in-functions)
+7. [Technical Indicators](#technical-indicators)
+8. [Utility Functions](#utility-functions)
+9. [Signal Return Format](#signal-return-format)
+10. [Data Structures](#data-structures)
+11. [Best Practices](#best-practices)
+12. [Complete Examples](#complete-examples)
+13. [Error Handling](#error-handling)
 
 ## Strategy Engine Overview
 
-The strategy engine executes Starlark scripts in response to market data events. Each strategy runs in its own actor and receives real-time data through callback functions.
+The strategy engine executes Starlark scripts in response to market data events. Each strategy runs in its own actor and receives real-time data through callback functions using a **thread-safe architecture**.
 
 ### Key Features
 - **Event-driven**: Strategies respond to kline, orderbook, and ticker data
 - **Isolated execution**: Each strategy runs in its own sandboxed environment
+- **Thread-safe state**: Uses `get_state()` and `set_state()` for thread-safe state management
+- **Runtime configuration**: Dynamic config access with `get_config()` and fallback defaults
 - **Rich indicator library**: 25+ technical indicators available
-- **Flexible configuration**: Strategy-specific settings via `config` object
+- **Flexible configuration**: Strategy-specific settings with user overrides
 - **Real-time data**: Access to live market data and historical buffers
 
 ### File Structure
@@ -32,12 +36,14 @@ strategy/
 ├── simple_sma.star          # Basic moving average strategy
 ├── rsi_strategy.star         # RSI-based strategy
 ├── macd_strategy.star        # MACD crossover strategy
+├── enhanced_sma.star         # Advanced SMA with order management
+├── multi_indicator_strategy.star  # Multi-indicator analysis
 └── your_strategy.star        # Your custom strategy
 ```
 
 ## Required Strategy Functions
 
-Every strategy must implement the `settings()` function. Callback functions are optional but at least one should be implemented.
+Every strategy must implement the `settings()` function and helper functions for the new thread-safe architecture. Callback functions are optional but at least one should be implemented.
 
 ### settings()
 **Required**: Yes  
@@ -53,6 +59,37 @@ def settings():
     }
 ```
 
+### get_config_values()
+**Required**: Yes (for thread-safe config access)  
+**Purpose**: Access runtime configuration with fallback defaults
+
+```python
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    params = settings()  # Get default values
+    return {
+        "short_period": get_config("short_period", params["short_period"]),
+        "long_period": get_config("long_period", params["long_period"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+```
+
+### init_state()
+**Required**: Yes (for thread-safe state management)  
+**Purpose**: Initialize strategy state variables using thread-safe methods
+
+```python
+def init_state():
+    """Initialize strategy state using thread-safe state management"""
+    # Initialize state values if they don't exist
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+        set_state("short_ma", [])
+        set_state("long_ma", [])
+        set_state("last_signal", "hold")
+```
+
 ### on_kline(kline)
 **Optional**: Recommended  
 **Purpose**: Handle new candlestick data  
@@ -61,13 +98,39 @@ def settings():
 ```python
 def on_kline(kline):
     """Handle new kline/candlestick data"""
-    current_price = kline.close  # Using attribute access
+    # Initialize state if needed
+    init_state()
+    
+    # Get config values from runtime context
+    cfg = get_config_values()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
+    # Add new kline to buffer
+    klines.append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Keep only needed klines
+    max_needed = cfg["long_period"] + 10
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    # Update state
+    set_state("klines", klines)
     
     # Your trading logic here
-    if should_buy():
+    current_price = kline.close
+    if should_buy(cfg, klines):
         return {
             "action": "buy",
-            "quantity": 0.01,
+            "quantity": cfg["position_size"],
             "type": "market",
             "reason": "Buy signal triggered"
         }
@@ -127,11 +190,14 @@ def on_start():
     print("🚀 Strategy starting")
     print("📊 Initializing technical analysis parameters")
     
-    # Validate configuration
-    if config.get("risk_percent", 0) > 5:
+    # Initialize state
+    init_state()
+    
+    # Get and validate configuration
+    cfg = get_config_values()
+    if cfg.get("risk_percent", 0) > 5:
         print("⚠️  High risk percentage detected")
     
-    # Initialize global state (if needed)
     print("✅ Strategy initialization complete")
 ```
 
@@ -153,31 +219,166 @@ def on_stop():
     print("✅ Strategy stopped cleanly")
 ```
 
-## Global Variables
+## Thread-Safe Architecture
 
-These variables are automatically available in all strategy functions:
+The strategy engine uses a thread-safe architecture to prevent race conditions and state corruption. **Never use global variables for state management**.
 
-### Market Data
-- **`symbol`** (string): Current trading pair (e.g., "BTCUSDT")
-- **`exchange`** (string): Exchange name (e.g., "bybit", "bitvavo")
-- **`klines`** (list): Full historical kline objects
+### Key Principles
 
-**Note**: Global price arrays (`close`, `open`, `high`, `low`, `volume`) have been removed. Strategies should extract price data from callback parameters or maintain their own internal buffers.
+1. **Use `get_state()` and `set_state()` for all state variables**
+2. **Use `get_config()` for runtime configuration access**
+3. **Initialize state in `init_state()` function**
+4. **Call `init_state()` at the beginning of each callback**
 
-### Configuration
-- **`config`** (dict): Strategy configuration from settings() merged with user overrides
+### Thread-Safe State Management
 
-### Order Book Data (when available)
-- **`bid`** (float): Best bid price
-- **`ask`** (float): Best ask price  
-- **`spread`** (float): Current bid-ask spread
+```python
+# ✅ CORRECT: Thread-safe state management
+def on_kline(kline):
+    # Always initialize state first
+    init_state()
+    
+    # Get current state safely
+    klines = get_state("klines", [])
+    last_signal = get_state("last_signal", "hold")
+    
+    # Update state safely
+    klines.append(new_kline_data)
+    set_state("klines", klines)
+    set_state("last_signal", "buy")
 
-### Callback-Specific Variables  
-- **`kline`** (object): Current kline in `on_kline()` callback (has attributes: timestamp, open, high, low, close, volume, symbol)
-- **`orderbook`** (object): Current orderbook in `on_orderbook()` callback (dictionary with bids, asks, symbol, timestamp)
-- **`ticker`** (object): Current ticker in `on_ticker()` callback (dictionary with symbol, price, volume, timestamp)
+# ❌ WRONG: Global state (causes frozen state errors)
+state = {"klines": [], "last_signal": "hold"}  # Don't do this!
+
+def on_kline(kline):
+    state["klines"].append(kline)  # This will fail!
+```
+
+### State Management Best Practices
+
+1. **Always call `init_state()` at the start of callbacks**
+2. **Use descriptive state keys**: `"rsi_values"`, `"moving_averages"`, `"position_size"`
+3. **Provide defaults**: `get_state("klines", [])` instead of `get_state("klines")`
+4. **Update state atomically**: Get → Modify → Set
+
+```python
+def init_state():
+    """Initialize all state variables"""
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+        set_state("indicators", {})
+        set_state("position", 0)
+        set_state("entry_price", 0.0)
+        set_state("last_signal", "hold")
+```
+
+## Configuration Management
+
+The new configuration system supports default values with user overrides and runtime access.
+
+### Configuration Flow
+
+1. **Strategy defaults** defined in `settings()` function
+2. **User overrides** from `config.yaml` (per-strategy, per-symbol)
+3. **Runtime access** via `get_config()` with fallbacks
+4. **Thread-safe access** in all callback functions
+
+### Configuration Pattern
+
+```python
+# 1. Define defaults in settings()
+def settings():
+    return {
+        "interval": "15m",  # Can be overridden in config.yaml
+        "period": 14,
+        "oversold": 30,
+        "overbought": 70,
+        "position_size": 0.01
+    }
+
+# 2. Create config access function
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    params = settings()
+    return {
+        "period": get_config("period", params["period"]),
+        "oversold": get_config("oversold", params["oversold"]),
+        "overbought": get_config("overbought", params["overbought"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+
+# 3. Use in callbacks
+def on_kline(kline):
+    init_state()
+    cfg = get_config_values()  # Get runtime config
+    
+    # Use config values
+    if len(closes) >= cfg["period"]:
+        rsi_values = rsi(closes, cfg["period"])
+        
+        if rsi_values[-1] < cfg["oversold"]:
+            return {
+                "action": "buy",
+                "quantity": cfg["position_size"],
+                "reason": f"RSI oversold: {rsi_values[-1]}"
+            }
+```
+
+### User Configuration Override
+
+In `config.yaml`, users can override strategy parameters:
+
+```yaml
+strategy_defaults:
+  interval: "5m"          # Global default
+  position_size: 0.01     # Global default
+
+exchanges:
+  bybit:
+    strategies:
+      BTCUSDT:
+        rsi_strategy:
+          interval: "15m"    # Override for RSI strategy on BTCUSDT
+          period: 21         # Custom RSI period
+          oversold: 25       # Custom oversold level
+      ETHUSDT:
+        simple_sma:
+          interval: "5m"     # Different interval for ETH
+          short_period: 5    # Faster SMA periods
+          long_period: 15
+```
 
 ## Built-in Functions
+
+### Thread-Safe State Management
+- **`get_state(key, default=None)`**: Get state value safely with optional default
+- **`set_state(key, value)`**: Set state value safely (thread-safe)
+
+```python
+# Thread-safe state access
+def on_kline(kline):
+    # Get state with default fallback
+    klines = get_state("klines", [])
+    position = get_state("position", 0)
+    
+    # Update state safely
+    klines.append(new_kline)
+    set_state("klines", klines)
+    set_state("position", 1)
+```
+
+### Configuration Access
+- **`get_config(key, default=None)`**: Get configuration value with fallback
+
+```python
+# Configuration access with defaults
+def get_config_values():
+    return {
+        "period": get_config("period", 14),        # Default to 14 if not configured
+        "threshold": get_config("threshold", 0.5)  # Default to 0.5 if not configured
+    }
+```
 
 ### Basic Functions
 - **`print(message)`**: Debug output (visible in logs)
@@ -187,6 +388,7 @@ These variables are automatically available in all strategy functions:
 
 ### Math Functions
 - **`math.abs(x)`**: Absolute value
+- **`math.isnan(x)`**: Check if value is NaN
 
 ### Logging
 - **`log(message)`**: Structured logging (recommended over print)
@@ -204,21 +406,35 @@ sma_values = sma(prices, period)
 - **Returns**: List of SMA values
 
 ```python
-# Example: 20-period SMA of closing prices
-# Note: Extract price data from your internal buffer, not global arrays
+# Example: 20-period SMA using thread-safe state management
 def on_kline(kline):
-    # Maintain internal price buffer
-    state["klines"].append({
+    # Initialize state
+    init_state()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
+    # Add new kline
+    klines.append({
+        "timestamp": kline.timestamp,
         "close": kline.close,
-        # ... other price data
+        "high": kline.high,
+        "low": kline.low,
+        "volume": kline.volume
     })
     
+    # Update state
+    set_state("klines", klines)
+    
     # Extract close prices 
-    close_prices = [k["close"] for k in state["klines"]]
+    close_prices = [k["close"] for k in klines]
     
     if len(close_prices) >= 20:
         sma20 = sma(close_prices, 20)
         current_sma = sma20[-1]  # Latest SMA value
+        
+        # Store SMA in state for future reference
+        set_state("sma20", sma20)
 ```
 
 #### Exponential Moving Average (EMA)
@@ -230,14 +446,18 @@ ema_values = ema(prices, period)
 - **Returns**: List of EMA values
 
 ```python
-# Example: 12-period EMA 
-# Extract from internal buffer in callback function
+# Example: 12-period EMA using thread-safe pattern
 def on_kline(kline):
-    # Update internal buffer with new kline data
-    close_prices = extract_closes_from_internal_buffer()
+    init_state()
+    cfg = get_config_values()
     
-    if len(close_prices) >= 12:
-        ema12 = ema(close_prices, 12)
+    # Get current klines from state
+    klines = get_state("klines", [])
+    close_prices = [k["close"] for k in klines]
+    
+    if len(close_prices) >= cfg["ema_period"]:
+        ema12 = ema(close_prices, cfg["ema_period"])
+        set_state("ema12", ema12)  # Store for later use
 ```
 
 ### Momentum Indicators
@@ -251,19 +471,37 @@ rsi_values = rsi(prices, period)
 - **Returns**: List of RSI values (0-100)
 
 ```python
-# Example: Standard 14-period RSI
-# Extract from internal buffer in callback function
+# Example: Standard 14-period RSI using thread-safe state
 def on_kline(kline):
-    close_prices = [k["close"] for k in state["klines"]]
+    init_state()
+    cfg = get_config_values()
     
-    if len(close_prices) >= 14:
-        rsi14 = rsi(close_prices, 14)
-        current_rsi = rsi14[-1]
+    # Get current state
+    klines = get_state("klines", [])
+    close_prices = [k["close"] for k in klines]
+    
+    if len(close_prices) >= cfg["rsi_period"]:
+        rsi_values = rsi(close_prices, cfg["rsi_period"])
+        current_rsi = rsi_values[-1]
         
-        if current_rsi > 70:
-            # Overbought condition
-        elif current_rsi < 30:
-            # Oversold condition
+        # Store RSI values in state
+        set_state("rsi_values", rsi_values)
+        
+        # Check trading conditions
+        if current_rsi > cfg["overbought"]:
+            set_state("last_signal", "sell")
+            return {
+                "action": "sell",
+                "quantity": cfg["position_size"],
+                "reason": f"RSI overbought: {current_rsi}"
+            }
+        elif current_rsi < cfg["oversold"]:
+            set_state("last_signal", "buy")
+            return {
+                "action": "buy", 
+                "quantity": cfg["position_size"],
+                "reason": f"RSI oversold: {current_rsi}"
+            }
 ```
 
 #### MACD (Moving Average Convergence Divergence)
@@ -277,21 +515,35 @@ macd_result = macd(prices, fast_period=12, slow_period=26, signal_period=9)
 - **Returns**: Dictionary with "macd", "signal", "histogram" arrays
 
 ```python
-# Example: Standard MACD
-# Extract from internal buffer in callback function
+# Example: Standard MACD using thread-safe pattern
 def on_kline(kline):
-    close_prices = [k["close"] for k in state["klines"]]
+    init_state()
+    cfg = get_config_values()
     
-    if len(close_prices) >= 26:
-        macd_data = macd(close_prices)
+    # Get current state
+    klines = get_state("klines", [])
+    close_prices = [k["close"] for k in klines]
+    
+    if len(close_prices) >= cfg["macd_slow_period"] + cfg["macd_signal_period"]:
+        macd_data = macd(close_prices, cfg["macd_fast"], cfg["macd_slow"], cfg["macd_signal"])
         macd_line = macd_data["macd"]
         signal_line = macd_data["signal"]
         histogram = macd_data["histogram"]
+        
+        # Store MACD data in state
+        set_state("macd_line", macd_line)
+        set_state("signal_line", signal_line)
+        set_state("histogram", histogram)
         
         # Check for bullish crossover
         if len(macd_line) >= 2 and len(signal_line) >= 2:
             if macd_line[-1] > signal_line[-1] and macd_line[-2] <= signal_line[-2]:
                 # MACD crossed above signal line
+                return {
+                    "action": "buy",
+                    "quantity": cfg["position_size"],
+                    "reason": "MACD bullish crossover"
+                }
 ```
 
 #### Stochastic Oscillator
@@ -1462,27 +1714,54 @@ def confirm_signal(primary_signal):
 
 ## Complete Examples
 
-### Example 1: RSI Mean Reversion Strategy
+### Example 1: Thread-Safe RSI Strategy
 ```python
+# RSI Strategy using new thread-safe architecture
+
 def settings():
     return {
-        "interval": "5m",
+        "interval": "5m",        # Default interval - can be overridden in config
         "rsi_period": 14,
         "oversold": 30,
         "overbought": 70,
         "position_size": 0.01
     }
 
-# Strategy state to maintain kline buffer
-state = {
-    "klines": [],
-    "position": 0,
-    "entry_price": 0
-}
+def get_config_values():
+    """Get configuration values with fallbacks to defaults"""
+    params = settings()
+    return {
+        "rsi_period": get_config("rsi_period", params["rsi_period"]),
+        "oversold": get_config("oversold", params["oversold"]),
+        "overbought": get_config("overbought", params["overbought"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+
+def init_state():
+    """Initialize strategy state using thread-safe state management"""
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+        set_state("position", 0)
+        set_state("entry_price", 0.0)
+        set_state("rsi_values", [])
+        set_state("last_signal", "hold")
 
 def on_kline(kline):
-    # Maintain internal kline buffer
-    state["klines"].append({
+    """Handle new kline data"""
+    # Initialize state if needed
+    init_state()
+    
+    # Get config values from runtime context
+    cfg = get_config_values()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    position = get_state("position", 0)
+    entry_price = get_state("entry_price", 0.0)
+    
+    # Add new kline to buffer
+    klines.append({
         "timestamp": kline.timestamp,
         "open": kline.open,
         "high": kline.high,
@@ -1492,39 +1771,180 @@ def on_kline(kline):
     })
     
     # Keep only what we need for calculations
-    rsi_period = config.get("rsi_period", 14)
-    max_needed = rsi_period + 10
-    if len(state["klines"]) > max_needed:
-        state["klines"] = state["klines"][-max_needed:]
+    max_needed = cfg["rsi_period"] + 10
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    # Update state
+    set_state("klines", klines)
     
     # Check data availability
-    if len(state["klines"]) < rsi_period + 1:
+    if len(klines) < cfg["rsi_period"] + 1:
         return {"action": "hold", "reason": "Insufficient data"}
     
-    # Extract close prices from internal buffer
-    close_prices = [k["close"] for k in state["klines"]]
+    # Extract close prices
+    close_prices = [k["close"] for k in klines]
     
     # Calculate RSI
-    rsi_values = rsi(close_prices, rsi_period)
+    rsi_values = rsi(close_prices, cfg["rsi_period"])
     current_rsi = rsi_values[-1]
     current_price = kline.close
     
-    # Get configuration
-    oversold = config.get("oversold", 30)
-    overbought = config.get("overbought", 70)
-    position_size = config.get("position_size", 0.01)
+    # Store RSI values in state
+    set_state("rsi_values", rsi_values)
     
     # Entry signals
-    if state["position"] == 0:  # No position
-        if current_rsi < oversold:
-            state["position"] = 1
-            state["entry_price"] = current_price
+    if position == 0:  # No position
+        if current_rsi < cfg["oversold"]:
+            set_state("position", 1)
+            set_state("entry_price", current_price)
+            set_state("last_signal", "buy")
             return {
                 "action": "buy",
-                "quantity": position_size,
+                "quantity": cfg["position_size"],
                 "type": "market",
                 "reason": f"RSI oversold: {round(current_rsi, 2)}"
             }
+    
+    # Exit signals
+    elif position == 1:  # Long position
+        if current_rsi > cfg["overbought"]:
+            set_state("position", 0)
+            set_state("entry_price", 0.0)
+            set_state("last_signal", "sell")
+            return {
+                "action": "sell",
+                "quantity": cfg["position_size"],
+                "type": "market",
+                "reason": f"RSI overbought: {round(current_rsi, 2)}"
+            }
+    
+    return {"action": "hold", "reason": f"RSI: {round(current_rsi, 2)}"}
+
+def on_orderbook(orderbook):
+    """Handle orderbook updates for spread analysis"""
+    if len(orderbook.bids) > 0 and len(orderbook.asks) > 0:
+        spread = orderbook.asks[0].price - orderbook.bids[0].price
+        mid_price = (orderbook.bids[0].price + orderbook.asks[0].price) / 2
+        spread_percent = (spread / mid_price) * 100
+        
+        # Only trade when spread is reasonable
+        if spread_percent > 0.1:
+            return {
+                "action": "hold",
+                "reason": f"Spread too wide: {round(spread_percent, 3)}%"
+            }
+    
+    return {"action": "hold", "reason": "Orderbook conditions acceptable"}
+
+def on_ticker(ticker):
+    """Handle ticker updates for volume confirmation"""
+    return {"action": "hold", "reason": "No ticker signals"}
+```
+
+### Example 2: Thread-Safe SMA Crossover Strategy
+```python
+# Simple Moving Average Crossover Strategy
+
+def settings():
+    return {
+        "interval": "15m",       # Default interval
+        "short_period": 10,
+        "long_period": 20,
+        "position_size": 0.01
+    }
+
+def get_config_values():
+    """Get configuration values with fallbacks"""
+    params = settings()
+    return {
+        "short_period": get_config("short_period", params["short_period"]),
+        "long_period": get_config("long_period", params["long_period"]),
+        "position_size": get_config("position_size", params["position_size"])
+    }
+
+def init_state():
+    """Initialize thread-safe state"""
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+        set_state("short_ma", [])
+        set_state("long_ma", [])
+        set_state("last_signal", "hold")
+        set_state("position", 0)
+
+def on_kline(kline):
+    """Handle new kline data"""
+    init_state()
+    cfg = get_config_values()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    
+    # Add new kline
+    klines.append({
+        "timestamp": kline.timestamp,
+        "close": kline.close,
+        "high": kline.high,
+        "low": kline.low,
+        "volume": kline.volume
+    })
+    
+    # Keep required history
+    max_needed = cfg["long_period"] + 10
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    set_state("klines", klines)
+    
+    # Extract close prices
+    close_prices = [k["close"] for k in klines]
+    
+    # Calculate moving averages
+    if len(close_prices) >= cfg["short_period"]:
+        short_ma = sma(close_prices, cfg["short_period"])
+        set_state("short_ma", short_ma)
+    
+    if len(close_prices) >= cfg["long_period"]:
+        long_ma = sma(close_prices, cfg["long_period"])
+        set_state("long_ma", long_ma)
+    
+    # Get MA values from state
+    short_ma = get_state("short_ma", [])
+    long_ma = get_state("long_ma", [])
+    last_signal = get_state("last_signal", "hold")
+    
+    # Check for crossover signals
+    if len(short_ma) >= 2 and len(long_ma) >= 2:
+        current_short = short_ma[-1]
+        current_long = long_ma[-1]
+        prev_short = short_ma[-2]
+        prev_long = long_ma[-2]
+        
+        # Bullish crossover: short MA crosses above long MA
+        if prev_short <= prev_long and current_short > current_long and last_signal != "buy":
+            set_state("last_signal", "buy")
+            set_state("position", 1)
+            return {
+                "action": "buy",
+                "quantity": cfg["position_size"],
+                "type": "market",
+                "reason": f"MA bullish crossover: {round(current_short, 2)} > {round(current_long, 2)}"
+            }
+        
+        # Bearish crossover: short MA crosses below long MA  
+        elif prev_short >= prev_long and current_short < current_long and last_signal != "sell":
+            set_state("last_signal", "sell")
+            set_state("position", 0)
+            return {
+                "action": "sell",
+                "quantity": cfg["position_size"],
+                "type": "market",
+                "reason": f"MA bearish crossover: {round(current_short, 2)} < {round(current_long, 2)}"
+            }
+    
+    return {"action": "hold", "reason": "No crossover signal"}
+```
     
     # Exit signals
     elif state["position"] == 1:  # Long position
@@ -1657,7 +2077,229 @@ def on_kline(kline):
                 "reason": "MA crossover exit"
             }
     
-    return {"action": "hold"}
+```
+
+### Example 3: Advanced Multi-Timeframe Strategy
+```python
+# Advanced strategy with multi-timeframe analysis and risk management
+
+def settings():
+    return {
+        "interval": "5m",        # Trading timeframe
+        "htf_interval": "1h",    # Higher timeframe for trend
+        "rsi_period": 14,
+        "ema_fast": 12,
+        "ema_slow": 26,
+        "position_size": 0.01,
+        "risk_reward": 2.0,
+        "max_trades_per_day": 3
+    }
+
+def get_config_values():
+    """Get configuration with thread-safe access"""
+    params = settings()
+    return {
+        "rsi_period": get_config("rsi_period", params["rsi_period"]),
+        "ema_fast": get_config("ema_fast", params["ema_fast"]),
+        "ema_slow": get_config("ema_slow", params["ema_slow"]),
+        "position_size": get_config("position_size", params["position_size"]),
+        "risk_reward": get_config("risk_reward", params["risk_reward"]),
+        "max_trades_per_day": get_config("max_trades_per_day", params["max_trades_per_day"])
+    }
+
+def init_state():
+    """Initialize comprehensive state management"""
+    if get_state("initialized", False) == False:
+        set_state("initialized", True)
+        set_state("klines", [])
+        set_state("position", 0)
+        set_state("entry_price", 0.0)
+        set_state("stop_loss", 0.0)
+        set_state("take_profit", 0.0)
+        set_state("trades_today", 0)
+        set_state("last_trade_date", "")
+
+def check_daily_reset():
+    """Reset daily counters"""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    last_date = get_state("last_trade_date", "")
+    
+    if today != last_date:
+        set_state("trades_today", 0)
+        set_state("last_trade_date", today)
+
+def calculate_position_size(current_price, stop_loss_price):
+    """Dynamic position sizing based on risk"""
+    cfg = get_config_values()
+    risk_per_trade = 0.01  # 1% risk per trade
+    
+    if stop_loss_price <= 0:
+        return cfg["position_size"]
+    
+    risk_amount = current_price * risk_per_trade
+    price_diff = abs(current_price - stop_loss_price)
+    
+    if price_diff > 0:
+        position_size = risk_amount / price_diff
+        return min(position_size, cfg["position_size"] * 2)  # Cap at 2x normal size
+    
+    return cfg["position_size"]
+
+def on_kline(kline):
+    """Main strategy logic with risk management"""
+    init_state()
+    check_daily_reset()
+    cfg = get_config_values()
+    
+    # Get current state
+    klines = get_state("klines", [])
+    position = get_state("position", 0)
+    trades_today = get_state("trades_today", 0)
+    
+    # Check daily trade limit
+    if trades_today >= cfg["max_trades_per_day"]:
+        return {"action": "hold", "reason": "Daily trade limit reached"}
+    
+    # Add new kline
+    klines.append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Maintain buffer size
+    max_needed = max(cfg["rsi_period"], cfg["ema_slow"]) + 20
+    if len(klines) > max_needed:
+        klines = klines[-max_needed:]
+    
+    set_state("klines", klines)
+    
+    # Check data sufficiency
+    if len(klines) < cfg["rsi_period"] + 1:
+        return {"action": "hold", "reason": "Insufficient data"}
+    
+    # Extract prices
+    close_prices = [k["close"] for k in klines]
+    high_prices = [k["high"] for k in klines]
+    low_prices = [k["low"] for k in klines]
+    
+    # Calculate indicators
+    rsi_values = rsi(close_prices, cfg["rsi_period"])
+    ema_fast_values = ema(close_prices, cfg["ema_fast"])
+    ema_slow_values = ema(close_prices, cfg["ema_slow"])
+    
+    current_rsi = rsi_values[-1]
+    current_ema_fast = ema_fast_values[-1]
+    current_ema_slow = ema_slow_values[-1]
+    current_price = kline.close
+    
+    # Entry logic
+    if position == 0:
+        # Long setup: EMA bullish + RSI oversold
+        if (current_ema_fast > current_ema_slow and 
+            current_rsi < 40):
+            
+            # Calculate stop loss and take profit
+            recent_low = min(low_prices[-10:])
+            stop_loss = recent_low * 0.99  # 1% below recent low
+            risk_amount = current_price - stop_loss
+            take_profit = current_price + (risk_amount * cfg["risk_reward"])
+            
+            # Calculate position size
+            position_size = calculate_position_size(current_price, stop_loss)
+            
+            # Update state
+            set_state("position", 1)
+            set_state("entry_price", current_price)
+            set_state("stop_loss", stop_loss)
+            set_state("take_profit", take_profit)
+            set_state("trades_today", trades_today + 1)
+            
+            return {
+                "action": "buy",
+                "quantity": position_size,
+                "type": "market",
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "reason": f"Long setup: RSI={round(current_rsi, 2)}"
+            }
+    
+    # Exit logic for active positions
+    elif position != 0:
+        stop_loss = get_state("stop_loss", 0.0)
+        take_profit = get_state("take_profit", 0.0)
+        
+        # Check stop loss and take profit
+        if position == 1:  # Long position
+            if current_price <= stop_loss:
+                set_state("position", 0)
+                return {
+                    "action": "sell",
+                    "quantity": cfg["position_size"],
+                    "type": "market",
+                    "reason": "Stop loss hit"
+                }
+            elif current_price >= take_profit:
+                set_state("position", 0)
+                return {
+                    "action": "sell",
+                    "quantity": cfg["position_size"],
+                    "type": "market",
+                    "reason": "Take profit hit"
+                }
+    
+    return {
+        "action": "hold", 
+        "reason": f"Monitoring: RSI={round(current_rsi, 2)}"
+    }
+```
+
+## Performance Monitoring
+
+The strategy engine provides comprehensive performance tracking and risk management:
+
+### State Management
+- Thread-safe state operations with `get_state()` and `set_state()`
+- Automatic state persistence across restarts
+- Per-strategy, per-symbol state isolation
+
+### Performance Metrics
+- Real-time P&L tracking
+- Win/loss ratios
+- Maximum drawdown monitoring
+- Sharpe ratio calculations
+
+### Risk Controls
+- Position size limits
+- Daily trade limits
+- Maximum concurrent positions
+- Stop-loss enforcement
+
+### Configuration Override Examples
+
+```yaml
+# config.yaml - Global defaults with per-symbol overrides
+strategies:
+  rsi_strategy:
+    default_config:
+      rsi_period: 14
+      oversold: 30
+      overbought: 70
+      position_size: 0.01
+    
+    # Per-symbol overrides
+    symbol_overrides:
+      BTCUSDT:
+        rsi_period: 21      # Different RSI period for BTC
+        position_size: 0.005 # Smaller position for BTC
+      
+      ETHUSDT:
+        oversold: 25        # More aggressive oversold level
+        overbought: 75      # More aggressive overbought level
 ```
 
 ## Error Handling
@@ -1668,8 +2310,8 @@ def on_kline(kline):
 ```python
 # Always check data length before indicator calculations
 def on_kline(kline):
-    # Extract from internal buffer
-    close_prices = [k["close"] for k in state["klines"]]
+    klines = get_state("klines", [])
+    close_prices = [k["close"] for k in klines]
     
     required_periods = 20  # Or whatever your strategy needs
     if len(close_prices) < required_periods:
@@ -1685,41 +2327,32 @@ if math.isnan(indicator_value):
     return {"action": "hold", "reason": "Invalid indicator value"}
 ```
 
-#### 3. Division by Zero
+#### 3. Thread-Safe State Access
 ```python
-# Check denominators before division
-if denominator != 0:
-    ratio = numerator / denominator
-else:
-    ratio = 0  # or handle appropriately
-```
-
-#### 4. Array Index Errors
-```python
-# Use safe array access
+# Always use get_state/set_state for thread safety
 def on_kline(kline):
-    close_prices = [k["close"] for k in state["klines"]]
+    # Correct: Thread-safe state access
+    position = get_state("position", 0)
+    set_state("position", 1)
     
-    if len(close_prices) > 0:
-        current_price = close_prices[-1]
-        # Or use the kline parameter directly
-        current_price = kline.close
-    else:
-        return {"action": "hold", "reason": "No price data"}
+    # Incorrect: Direct state manipulation (not thread-safe)
+    # state["position"] = 1  # DON'T DO THIS
 ```
 
 ### Debug Logging
 ```python
 def on_kline(kline):
-    # Use log() for debugging (appears in structured logs)
+    # Use log() for structured debugging
     log(f"Processing kline: {kline.timestamp}, price: {kline.close}")
     
-    # Use print() for simple debugging (appears in stdout)
-    print(f"Current position: {state['position']}")
+    # Use print() for simple debugging
+    print(f"Current position: {get_state('position', 0)}")
 ```
 
 ---
 
-This documentation covers all functions and capabilities exposed by the Mercantile strategy engine. For additional examples, see the strategy files in the `/strategy` directory.
+This documentation covers the complete MarketMaestro strategy engine with thread-safe architecture. All examples use the new `get_state()`, `set_state()`, and `get_config()` functions for safe concurrent operation.
 
-For questions or issues, refer to the main [README](../README.md) or check the API documentation.
+For additional examples, see the strategy files in the `/strategy` directory.
+
+For questions or issues, refer to the main [README](../README.md) or check the source code documentation.

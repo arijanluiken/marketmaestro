@@ -74,7 +74,7 @@ def on_kline(kline):
             "action": "buy",
             "quantity": position_size,
             "type": "market",
-            "reason": f"HMA uptrend, CMO: {round(current_cmo, 1)}, STC: {round(current_stc, 1)}, BOP: {round(current_bop, 2)}"
+            "reason": "HMA uptrend, CMO: " + str(round(current_cmo, 1)) + ", STC: " + str(round(current_stc, 1)) + ", BOP: " + str(round(current_bop, 2))
         }
     
     # Exit conditions - HMA downtrend or weak momentum or overbought
@@ -87,12 +87,12 @@ def on_kline(kline):
             "action": "sell",
             "quantity": position_size,
             "type": "market",
-            "reason": f"Exit signal - HMA trend: {hma_uptrend}, CMO: {round(current_cmo, 1)}, STC: {round(current_stc, 1)}"
+            "reason": "Exit signal - HMA trend: " + str(hma_uptrend) + ", CMO: " + str(round(current_cmo, 1)) + ", STC: " + str(round(current_stc, 1))
         }
     
     return {
         "action": "hold",
-        "reason": f"Waiting for signals - CMO: {round(current_cmo, 1)}, STC: {round(current_stc, 1)}"
+        "reason": "Waiting for signals - CMO: " + str(round(current_cmo, 1)) + ", STC: " + str(round(current_stc, 1))
     }
 
 def on_orderbook(orderbook):

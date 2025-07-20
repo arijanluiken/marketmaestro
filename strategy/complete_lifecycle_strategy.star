@@ -32,14 +32,22 @@ def on_kline(kline):
     """
     Main trading logic called for each new kline.
     """
-    # Get historical data
-    high = [float(k.high) for k in get_historical_klines(50)]
-    low = [float(k.low) for k in get_historical_klines(50)]
-    close = [float(k.close) for k in get_historical_klines(50)]
-    volume = [float(k.volume) for k in get_historical_klines(50)]
+    # Use the klines buffer from context instead of get_historical_klines
+    if len(klines) < 50:
+        return {
+            "action": "hold",
+            "quantity": 0.0,
+            "price": 0.0,
+            "type": "market",
+            "reason": "Insufficient historical data"
+        }
     
-    if len(close) < 50:
-        return
+    # Extract price data from klines buffer
+    high = [float(k["high"]) for k in klines[-50:]]
+    low = [float(k["low"]) for k in klines[-50:]]
+    close = [float(k["close"]) for k in klines[-50:]]
+    volume = [float(k["volume"]) for k in klines[-50:]]
+    open_prices = [float(k["open"]) for k in klines[-50:]]
     
     current_price = float(kline.close)
     
@@ -52,7 +60,7 @@ def on_kline(kline):
     rsi_values = rsi(close, 14)
     current_rsi = rsi_values[-1] if len(rsi_values) > 0 else 50
     
-    stoch_rsi = stochastic_rsi(close, 14, 3, 3)
+    stoch_rsi = stochastic_rsi(close, 14, 14, 3, 3)
     stoch_k = stoch_rsi["k"][-1] if len(stoch_rsi["k"]) > 0 else 50
     stoch_d = stoch_rsi["d"][-1] if len(stoch_rsi["d"]) > 0 else 50
     
@@ -61,7 +69,7 @@ def on_kline(kline):
     current_vwap = vwap_values[-1] if len(vwap_values) > 0 else current_price
     
     # 4. Volatility Analysis
-    heikin_ashi_data = heikin_ashi_candles([float(k.open) for k in get_historical_klines(50)], high, low, close)
+    heikin_ashi_data = heikin_ashi(open_prices, high, low, close)
     ha_close = heikin_ashi_data["close"][-1] if len(heikin_ashi_data["close"]) > 0 else current_price
     ha_open = heikin_ashi_data["open"][-1] if len(heikin_ashi_data["open"]) > 0 else current_price
     
@@ -84,19 +92,39 @@ def on_kline(kline):
         ha_close < ha_open       # Bearish Heikin Ashi candle
     )
     
-    # Execute trades
+    # Execute trades - return signal dictionaries instead of calling signal()
     if long_signal:
         print("🔵 LONG SIGNAL at " + str(current_price))
         print("   Trend: " + str(current_trend) + " | RSI: " + str(current_rsi) + " | Stoch K: " + str(stoch_k))
-        signal("buy", 0.02)
+        return {
+            "action": "buy",
+            "quantity": 0.02,
+            "price": current_price,
+            "type": "market",
+            "reason": "Multi-indicator bullish signal: trend=" + str(current_trend) + " RSI=" + str(round(current_rsi, 2)) + " StochK=" + str(round(stoch_k, 2))
+        }
     elif short_signal:
         print("🔴 SHORT SIGNAL at " + str(current_price))
         print("   Trend: " + str(current_trend) + " | RSI: " + str(current_rsi) + " | Stoch K: " + str(stoch_k))
-        signal("sell", 0.02)
+        return {
+            "action": "sell",
+            "quantity": 0.02,
+            "price": current_price,
+            "type": "market",
+            "reason": "Multi-indicator bearish signal: trend=" + str(current_trend) + " RSI=" + str(round(current_rsi, 2)) + " StochK=" + str(round(stoch_k, 2))
+        }
     else:
         # Log current market state every 10th kline to avoid spam
         if int(current_price) % 10 == 0:
             print("📊 Market Analysis - Price: " + str(current_price) + " | Trend: " + str(current_trend) + " | RSI: " + str(current_rsi))
+        
+        return {
+            "action": "hold",
+            "quantity": 0.0,
+            "price": current_price,
+            "type": "market",
+            "reason": "No signal: waiting for better entry conditions"
+        }
 
 def on_orderbook(orderbook):
     """
@@ -104,7 +132,13 @@ def on_orderbook(orderbook):
     Can be used for advanced order flow analysis.
     """
     # Example: Monitor large bid/ask levels
-    pass
+    return {
+        "action": "hold",
+        "quantity": 0.0,
+        "price": 0.0,
+        "type": "market",
+        "reason": "No orderbook signal"
+    }
 
 def on_ticker(ticker):
     """
@@ -114,3 +148,11 @@ def on_ticker(ticker):
     # Example: Volume spike detection
     if float(ticker.volume) > 1000000:  # Example threshold
         print("📈 High volume detected: " + str(ticker.volume))
+    
+    return {
+        "action": "hold",
+        "quantity": 0.0,
+        "price": 0.0,
+        "type": "market",
+        "reason": "No ticker signal"
+    }

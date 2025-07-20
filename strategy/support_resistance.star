@@ -111,7 +111,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price,
                 "type": "market",
-                "reason": f"Price bouncing off pivot support at {current_pivot:.2f} in bullish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price bouncing off pivot support at " + str(round(current_pivot, 2)) + " in bullish trend. RSI: " + str(round(current_rsi, 1))
             }
         
         # Near S1 support
@@ -121,7 +121,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price,
                 "type": "market",
-                "reason": f"Price bouncing off S1 support at {current_s1:.2f} in bullish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price bouncing off S1 support at " + str(round(current_s1, 2)) + " in bullish trend. RSI: " + str(round(current_rsi, 1))
             }
         
         # Near Fibonacci support levels
@@ -131,7 +131,7 @@ def on_kline(kline):
                 "quantity": position_size, 
                 "price": current_price,
                 "type": "market",
-                "reason": f"Price bouncing off 61.8% Fibonacci level at {fib_618:.2f} in bullish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price bouncing off 61.8% Fibonacci level at " + str(round(fib_618, 2)) + " in bullish trend. RSI: " + str(round(current_rsi, 1))
             }
         
         if near_level(current_price, fib_500) and current_price > fib_500:
@@ -140,7 +140,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price, 
                 "type": "market",
-                "reason": f"Price bouncing off 50% Fibonacci level at {fib_500:.2f} in bullish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price bouncing off 50% Fibonacci level at " + str(round(fib_500, 2)) + " in bullish trend. RSI: " + str(round(current_rsi, 1))
             }
     
     # Sell conditions - price near resistance in downtrend
@@ -152,7 +152,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price,
                 "type": "market", 
-                "reason": f"Price rejected at pivot resistance at {current_pivot:.2f} in bearish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price rejected at pivot resistance at " + str(round(current_pivot, 2)) + " in bearish trend. RSI: " + str(round(current_rsi, 1))
             }
         
         # Near R1 resistance
@@ -162,7 +162,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price,
                 "type": "market",
-                "reason": f"Price rejected at R1 resistance at {current_r1:.2f} in bearish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price rejected at R1 resistance at " + str(round(current_r1, 2)) + " in bearish trend. RSI: " + str(round(current_rsi, 1))
             }
         
         # Near Fibonacci resistance levels
@@ -172,7 +172,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price,
                 "type": "market",
-                "reason": f"Price rejected at 38.2% Fibonacci level at {fib_382:.2f} in bearish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price rejected at 38.2% Fibonacci level at " + str(round(fib_382, 2)) + " in bearish trend. RSI: " + str(round(current_rsi, 1))
             }
         
         if near_level(current_price, fib_236) and current_price < fib_236:
@@ -181,7 +181,7 @@ def on_kline(kline):
                 "quantity": position_size,
                 "price": current_price,
                 "type": "market",
-                "reason": f"Price rejected at 23.6% Fibonacci level at {fib_236:.2f} in bearish trend. RSI: {current_rsi:.1f}"
+                "reason": "Price rejected at 23.6% Fibonacci level at " + str(round(fib_236, 2)) + " in bearish trend. RSI: " + str(round(current_rsi, 1))
             }
     
     # Strong breakout conditions
@@ -191,7 +191,7 @@ def on_kline(kline):
             "quantity": position_size,
             "price": current_price,
             "type": "market",
-            "reason": f"Strong breakout above R2 resistance at {current_r2:.2f}. RSI: {current_rsi:.1f}"
+            "reason": "Strong breakout above R2 resistance at " + str(round(current_r2, 2)) + ". RSI: " + str(round(current_rsi, 1))
         }
     
     if current_rsi < 40 and current_price < current_s2:
@@ -200,13 +200,13 @@ def on_kline(kline):
             "quantity": position_size,
             "price": current_price,
             "type": "market",
-            "reason": f"Strong breakdown below S2 support at {current_s2:.2f}. RSI: {current_rsi:.1f}"
+            "reason": "Strong breakdown below S2 support at " + str(round(current_s2, 2)) + ". RSI: " + str(round(current_rsi, 1))
         }
     
     # Default hold
     return {
         "action": "hold",
-        "reason": f"No clear setup. Price: {current_price:.2f}, Trend: {trend}, Pivot: {current_pivot:.2f}, RSI: {current_rsi:.1f}"
+        "reason": "No clear setup. Price: " + str(round(current_price, 2)) + ", Trend: " + trend + ", Pivot: " + str(round(current_pivot, 2)) + ", RSI: " + str(round(current_rsi, 1))
     }
 
 def on_orderbook(orderbook):

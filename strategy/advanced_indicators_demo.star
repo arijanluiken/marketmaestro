@@ -146,13 +146,13 @@ def on_kline(kline):
     # Decision making
     if bullish_conditions >= 6:
         action = "buy"
-        reason = f"Strong bullish signals: {bullish_conditions}/8 conditions met. ADX: {current_adx:.2f}, Price vs PSAR: {'above' if current_price > current_psar else 'below'}, OBV trend: {obv_trend}"
+        reason = "Strong bullish signals: " + str(bullish_conditions) + "/8 conditions met. ADX: " + str(round(current_adx, 2)) + ", Price vs PSAR: " + ("above" if current_price > current_psar else "below") + ", OBV trend: " + obv_trend
     elif bearish_conditions >= 6:
         action = "sell"
-        reason = f"Strong bearish signals: {bearish_conditions}/8 conditions met. ADX: {current_adx:.2f}, Price vs PSAR: {'above' if current_price > current_psar else 'below'}, OBV trend: {obv_trend}"
+        reason = "Strong bearish signals: " + str(bearish_conditions) + "/8 conditions met. ADX: " + str(round(current_adx, 2)) + ", Price vs PSAR: " + ("above" if current_price > current_psar else "below") + ", OBV trend: " + obv_trend
     else:
         action = "hold"
-        reason = f"Mixed signals - Bullish: {bullish_conditions}, Bearish: {bearish_conditions}. ADX: {current_adx:.2f} (trend strength)"
+        reason = "Mixed signals - Bullish: " + str(bullish_conditions) + ", Bearish: " + str(bearish_conditions) + ". ADX: " + str(round(current_adx, 2)) + " (trend strength)"
     
     return {
         "action": action,

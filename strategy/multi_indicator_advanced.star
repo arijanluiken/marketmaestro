@@ -9,15 +9,22 @@ def settings():
     }
 
 def on_kline(kline):
-    # Get sufficient price data
-    high = [float(k.high) for k in get_historical_klines(50)]
-    low = [float(k.low) for k in get_historical_klines(50)]
-    close = [float(k.close) for k in get_historical_klines(50)]
-    open_prices = [float(k.open) for k in get_historical_klines(50)]
-    volume = [float(k.volume) for k in get_historical_klines(50)]
+    # Use klines buffer from context
+    if len(klines) < 50:
+        return {
+            "action": "hold",
+            "quantity": 0.0,
+            "price": 0.0,
+            "type": "market",
+            "reason": "Insufficient historical data"
+        }
     
-    if len(close) < 50:
-        return {"action": "hold", "reason": "insufficient data"}
+    # Extract price data from klines buffer
+    high = [float(k["high"]) for k in klines[-50:]]
+    low = [float(k["low"]) for k in klines[-50:]]
+    close = [float(k["close"]) for k in klines[-50:]]
+    open_prices = [float(k["open"]) for k in klines[-50:]]
+    volume = [float(k["volume"]) for k in klines[-50:]]
     
     current_price = float(kline.close)
     
@@ -105,43 +112,85 @@ def on_kline(kline):
     )
     
     # Log all indicator values for analysis
-    log(f"Price: {current_price:.2f}")
-    log(f"Supertrend: {supertrend_line:.2f}, Uptrend: {is_uptrend}")
-    log(f"Alligator - Jaw: {jaw:.2f}, Teeth: {teeth:.2f}, Lips: {lips:.2f}")
-    log(f"Vortex - VI+: {vi_plus:.3f}, VI-: {vi_minus:.3f}")
-    log(f"Stoch RSI K: {stoch_k:.1f}, D: {stoch_d:.1f}")
-    log(f"AO: {current_ao:.4f}, AC: {current_ac:.4f}")
-    log(f"Heikin Ashi Bullish: {ha_bullish}")
-    log(f"TSI: {current_tsi:.2f}")
-    log(f"Elder Ray - Bull: {bull_power:.4f}, Bear: {bear_power:.4f}")
+    log("Price: " + str(round(current_price, 2)))
+    log("Supertrend: " + str(round(supertrend_line, 2)) + ", Uptrend: " + str(is_uptrend))
+    log("Alligator - Jaw: " + str(round(jaw, 2)) + ", Teeth: " + str(round(teeth, 2)) + ", Lips: " + str(round(lips, 2)))
+    log("Vortex - VI+: " + str(round(vi_plus, 3)) + ", VI-: " + str(round(vi_minus, 3)))
+    log("Stoch RSI K: " + str(round(stoch_k, 1)) + ", D: " + str(round(stoch_d, 1)))
+    log("AO: " + str(round(current_ao, 4)) + ", AC: " + str(round(current_ac, 4)))
+    log("Heikin Ashi Bullish: " + str(ha_bullish))
+    log("TSI: " + str(round(current_tsi, 2)))
+    log("Elder Ray - Bull: " + str(round(bull_power, 4)) + ", Bear: " + str(round(bear_power, 4)))
     
     # Execute trades based on signals
     if strong_bullish:
-        log(f"STRONG BUY signal at {current_price}")
-        signal("buy", 0.02)  # Larger position for strong signals
+        log("STRONG BUY signal at " + str(current_price))
+        return {
+            "action": "buy",
+            "quantity": 0.02,
+            "price": current_price,
+            "type": "market",
+            "reason": "Strong bullish multi-indicator confluence"
+        }
         
     elif strong_bearish:
-        log(f"STRONG SELL signal at {current_price}")
-        signal("sell", 0.02)
+        log("STRONG SELL signal at " + str(current_price))
+        return {
+            "action": "sell",
+            "quantity": 0.02,
+            "price": current_price,
+            "type": "market",
+            "reason": "Strong bearish multi-indicator confluence"
+        }
         
     # Weaker signals for smaller positions
     elif (is_uptrend and current_price > supertrend_line and 
           stoch_k < 70 and current_ao > previous_ao):
-        log(f"Weak BUY signal at {current_price}")
-        signal("buy", 0.01)
+        log("Weak BUY signal at " + str(current_price))
+        return {
+            "action": "buy",
+            "quantity": 0.01,
+            "price": current_price,
+            "type": "market",
+            "reason": "Weak bullish signal: trend + momentum improving"
+        }
         
     elif (not is_uptrend and current_price < supertrend_line and 
           stoch_k > 30 and current_ao < previous_ao):
-        log(f"Weak SELL signal at {current_price}")
-        signal("sell", 0.01)
+        log("Weak SELL signal at " + str(current_price))
+        return {
+            "action": "sell",
+            "quantity": 0.01,
+            "price": current_price,
+            "type": "market",
+            "reason": "Weak bearish signal: trend + momentum declining"
+        }
     
     else:
-        return {"action": "hold", "reason": "mixed signals"}
+        return {
+            "action": "hold",
+            "quantity": 0.0,
+            "price": current_price,
+            "type": "market",
+            "reason": "Mixed signals from indicators"
+        }
 
 def on_orderbook(orderbook):
     # Could add spread analysis here
-    pass
+    return {
+        "action": "hold",
+        "quantity": 0.0,
+        "price": 0.0,
+        "type": "market",
+        "reason": "No orderbook signal"
+    }
 
 def on_ticker(ticker):
     # Could add volume analysis here
-    pass
+    return {
+        "action": "hold",
+        "quantity": 0.0,
+        "price": 0.0,
+        "type": "market",
+        "reason": "No ticker signal"
+    }

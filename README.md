@@ -17,7 +17,7 @@ MarketMaestro is a sophisticated cryptocurrency trading bot built in Go using th
 ### Trading Capabilities
 - **📊 Multi-Exchange Support**: Unified interface for Bybit and Bitvavo exchanges
 - **🐍 Starlark Strategy Engine**: Write trading strategies in Python-like syntax
-- **📐 25+ Technical Indicators**: Comprehensive indicator library (SMA, EMA, RSI, MACD, Bollinger Bands, etc.)
+- **📐 65+ Technical Indicators**: Comprehensive indicator library (SMA, EMA, RSI, MACD, Bollinger Bands, RVI, PPO, A/D Line, CMF, Linear Regression, etc.)
 - **⚡ Real-Time Data**: Live market data feeds with kline, orderbook, and ticker support
 - **🎯 Risk Management**: Built-in position sizing and risk controls
 - **💼 Portfolio Tracking**: Real-time portfolio monitoring and P&L calculation

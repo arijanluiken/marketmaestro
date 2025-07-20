@@ -1460,17 +1460,382 @@ if current_coppock > 0 and previous_coppock <= 0:
     # Bullish long-term reversal signal
 ```
 
+## Additional Technical Indicators
+
+The MarketMaestro strategy engine has been enhanced with 14 additional high-value technical indicators commonly used by professional traders:
+
+### Momentum Indicators
+
+#### Relative Vigor Index (RVI)
+```python
+rvi_result = rvi(open, high, low, close, period=14)
+```
+- **open, high, low, close**: OHLC price arrays
+- **period**: RVI period (default: 14)
+- **Returns**: Dictionary with "rvi" and "signal" arrays
+
+```python
+# Example: RVI momentum analysis
+rvi_data = rvi(open, high, low, close, 14)
+rvi_line = rvi_data["rvi"][-1]
+signal_line = rvi_data["signal"][-1]
+
+if rvi_line > signal_line:
+    # Bullish momentum
+```
+
+#### Percentage Price Oscillator (PPO)
+```python
+ppo_result = ppo(prices, fast_period=12, slow_period=26, signal_period=9)
+```
+- **prices**: Price array
+- **fast_period**: Fast EMA period (default: 12)
+- **slow_period**: Slow EMA period (default: 26)
+- **signal_period**: Signal line period (default: 9)
+- **Returns**: Dictionary with "ppo", "signal", "histogram" arrays
+
+```python
+# Example: PPO analysis (percentage-based MACD)
+ppo_data = ppo(close, 12, 26, 9)
+ppo_line = ppo_data["ppo"][-1]
+signal_line = ppo_data["signal"][-1]
+
+if ppo_line > signal_line and ppo_line > 0:
+    # Bullish momentum above zero line
+```
+
+### Volume-Based Indicators
+
+#### Accumulation/Distribution Line (A/D)
+```python
+ad_values = accumulation_distribution(high, low, close, volume)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **Returns**: List of A/D line values
+
+```python
+# Example: A/D line trend confirmation
+ad_line = accumulation_distribution(high, low, close, volume)
+current_ad = ad_line[-1]
+previous_ad = ad_line[-2]
+
+if current_ad > previous_ad:
+    # Accumulation (buying pressure)
+```
+
+#### Chaikin Money Flow (CMF)
+```python
+cmf_values = chaikin_money_flow(high, low, close, volume, period=20)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **period**: CMF period (default: 20)
+- **Returns**: List of CMF values (-1 to 1)
+
+```python
+# Example: CMF buying/selling pressure
+cmf_line = chaikin_money_flow(high, low, close, volume, 20)
+current_cmf = cmf_line[-1]
+
+if current_cmf > 0.1:
+    # Strong buying pressure
+elif current_cmf < -0.1:
+    # Strong selling pressure
+```
+
+#### Money Flow Volume (MFV)
+```python
+mfv_values = money_flow_volume(high, low, close, volume)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **Returns**: List of money flow volume values
+
+```python
+# Example: Money flow volume analysis
+mfv = money_flow_volume(high, low, close, volume)
+current_mfv = mfv[-1]
+
+if current_mfv > 0:
+    # Positive money flow (buying pressure)
+```
+
+#### Williams Accumulation/Distribution (Williams A/D)
+```python
+wad_values = williams_ad(high, low, close)
+```
+- **high, low, close**: Price arrays
+- **Returns**: List of Williams A/D values
+
+```python
+# Example: Williams A/D analysis
+wad = williams_ad(high, low, close)
+trend = wad[-1] - wad[-10]  # 10-period trend
+
+if trend > 0:
+    # Accumulation trend
+```
+
+### Statistical & Regression Indicators
+
+#### Linear Regression
+```python
+lr_values = linear_regression(prices, period)
+```
+- **prices**: Price array
+- **period**: Regression period
+- **Returns**: List of linear regression values
+
+```python
+# Example: Linear regression trend line
+lr = linear_regression(close, 14)
+current_lr = lr[-1]
+current_price = close[-1]
+
+if current_price > current_lr:
+    # Price above regression line (bullish)
+```
+
+#### Linear Regression Slope
+```python
+slope_values = linear_regression_slope(prices, period)
+```
+- **prices**: Price array
+- **period**: Regression period
+- **Returns**: List of slope values
+
+```python
+# Example: Trend direction via slope
+slope = linear_regression_slope(close, 14)
+current_slope = slope[-1]
+
+if current_slope > 0:
+    # Upward trend
+elif current_slope < 0:
+    # Downward trend
+```
+
+#### Correlation Coefficient
+```python
+corr_values = correlation_coefficient(prices, period)
+```
+- **prices**: Price array
+- **period**: Correlation period
+- **Returns**: List of correlation values (-1 to 1)
+
+```python
+# Example: Price-time correlation
+corr = correlation_coefficient(close, 14)
+current_corr = corr[-1]
+
+if current_corr > 0.8:
+    # Strong positive trend
+elif current_corr < -0.8:
+    # Strong negative trend
+```
+
+#### Standard Error
+```python
+se_values = standard_error(prices, period)
+```
+- **prices**: Price array
+- **period**: Regression period
+- **Returns**: List of standard error values
+
+```python
+# Example: Trend reliability via standard error
+se = standard_error(close, 14)
+current_se = se[-1]
+
+# Lower standard error = more reliable trend
+if current_se < threshold:
+    # High confidence in trend
+```
+
+### Bollinger Band Derivatives
+
+#### Bollinger %B
+```python
+percent_b_values = bollinger_percent_b(prices, period=20, multiplier=2.0)
+```
+- **prices**: Price array
+- **period**: BB period (default: 20)
+- **multiplier**: Standard deviation multiplier (default: 2.0)
+- **Returns**: List of %B values
+
+```python
+# Example: Bollinger %B position analysis
+percent_b = bollinger_percent_b(close, 20, 2.0)
+current_b = percent_b[-1]
+
+if current_b > 1.0:
+    # Price above upper band
+elif current_b < 0.0:
+    # Price below lower band
+elif current_b > 0.8:
+    # Near upper band (overbought)
+elif current_b < 0.2:
+    # Near lower band (oversold)
+```
+
+#### Bollinger Band Width
+```python
+bbw_values = bollinger_band_width(prices, period=20, multiplier=2.0)
+```
+- **prices**: Price array
+- **period**: BB period (default: 20)
+- **multiplier**: Standard deviation multiplier (default: 2.0)
+- **Returns**: List of band width values
+
+```python
+# Example: Volatility analysis via band width
+bbw = bollinger_band_width(close, 20, 2.0)
+current_width = bbw[-1]
+avg_width = sum(bbw[-20:]) / 20
+
+if current_width < avg_width * 0.5:
+    # Band squeeze (low volatility)
+elif current_width > avg_width * 1.5:
+    # Band expansion (high volatility)
+```
+
+### Volatility Indicators
+
+#### Price Rate of Change (Price ROC)
+```python
+price_roc_values = price_roc(prices, period)
+```
+- **prices**: Price array
+- **period**: ROC period
+- **Returns**: List of price ROC values (percentage)
+
+```python
+# Example: Price momentum analysis
+proc = price_roc(close, 10)
+current_roc = proc[-1]
+
+if current_roc > 5:
+    # Strong upward momentum (>5%)
+elif current_roc < -5:
+    # Strong downward momentum (<-5%)
+```
+
+#### Volatility Index
+```python
+vi_values = volatility_index(high, low, close, period=30)
+```
+- **high, low, close**: Price arrays
+- **period**: Volatility period (default: 30)
+- **Returns**: List of volatility index values (annualized %)
+
+```python
+# Example: Market volatility assessment
+vi = volatility_index(high, low, close, 30)
+current_vol = vi[-1]
+
+if current_vol > 50:
+    # High volatility environment
+elif current_vol < 20:
+    # Low volatility environment
+```
+
+### Advanced Usage Examples
+
+#### Multi-Indicator Confirmation Strategy
+```python
+def on_kline(kline):
+    init_state()
+    cfg = get_config_values()
+    
+    # Get state
+    klines = get_state("klines", [])
+    # ... update klines ...
+    
+    # Extract price arrays
+    close_prices = [k["close"] for k in klines]
+    high_prices = [k["high"] for k in klines]
+    low_prices = [k["low"] for k in klines]
+    volume_data = [k["volume"] for k in klines]
+    
+    if len(close_prices) < 30:
+        return {"action": "hold", "reason": "Insufficient data"}
+    
+    # Multiple indicator confirmation
+    rvi_data = rvi(open_prices, high_prices, low_prices, close_prices, 14)
+    cmf_line = chaikin_money_flow(high_prices, low_prices, close_prices, volume_data, 20)
+    lr_slope = linear_regression_slope(close_prices, 14)
+    
+    rvi_bullish = rvi_data["rvi"][-1] > rvi_data["signal"][-1]
+    cmf_bullish = cmf_line[-1] > 0.1
+    trend_bullish = lr_slope[-1] > 0
+    
+    confirmations = sum([rvi_bullish, cmf_bullish, trend_bullish])
+    
+    if confirmations >= 2:
+        return {
+            "action": "buy",
+            "quantity": cfg["position_size"],
+            "reason": f"Multi-indicator confirmation: {confirmations}/3"
+        }
+    
+    return {"action": "hold"}
+```
+
+#### Bollinger Band Squeeze Strategy
+```python
+def on_kline(kline):
+    init_state()
+    cfg = get_config_values()
+    
+    # Get state and update
+    klines = get_state("klines", [])
+    # ... update klines ...
+    
+    close_prices = [k["close"] for k in klines]
+    
+    if len(close_prices) < 30:
+        return {"action": "hold"}
+    
+    # Bollinger Band analysis
+    bbw = bollinger_band_width(close_prices, 20, 2.0)
+    percent_b = bollinger_percent_b(close_prices, 20, 2.0)
+    
+    # Calculate squeeze conditions
+    current_width = bbw[-1]
+    avg_width = sum(bbw[-20:]) / 20
+    is_squeeze = current_width < avg_width * 0.7
+    
+    current_b = percent_b[-1]
+    
+    # Strategy logic
+    if is_squeeze and current_b > 0.8:
+        # Squeeze with price near upper band
+        return {
+            "action": "buy",
+            "quantity": cfg["position_size"],
+            "reason": f"Squeeze breakout: width={current_width:.4f}, %B={current_b:.2f}"
+        }
+    elif is_squeeze and current_b < 0.2:
+        # Squeeze with price near lower band
+        return {
+            "action": "sell",
+            "quantity": cfg["position_size"],
+            "reason": f"Squeeze breakdown: width={current_width:.4f}, %B={current_b:.2f}"
+        }
+    
+    return {"action": "hold"}
+```
+
 ### All Available Indicators Summary
 - **Basic**: `sma`, `ema`, `rsi`, `stddev`, `roc`
 - **Moving Averages**: `sma`, `ema`, `wma`, `hull_ma`, `alma`, `tema`
-- **Advanced Momentum**: `macd`, `stochastic`, `williams_r`, `cci`, `mfi`, `tsi`, `ultimate_oscillator`, `stochastic_rsi`, `cmo`, `kst`, `stc`
-- **Volatility**: `bollinger`, `atr`, `keltner`, `donchian`, `supertrend`, `chandelier_exit`, `chande_kroll_stop`, `price_channel`, `mass_index`
-- **Volume**: `vwap`, `obv`, `mfi`, `chaikin_oscillator`, `emv`, `force_index`, `elder_force_index`, `volume_oscillator`, `volume_profile`, `klinger_oscillator`
-- **Trend**: `adx`, `parabolic_sar`, `ichimoku`, `aroon`, `kama`, `detrended`, `williams_alligator`, `vortex`, `bop`, `coppock_curve`
+- **Advanced Momentum**: `macd`, `stochastic`, `williams_r`, `cci`, `mfi`, `tsi`, `ultimate_oscillator`, `stochastic_rsi`, `cmo`, `kst`, `stc`, `rvi`, `ppo`
+- **Volatility**: `bollinger`, `atr`, `keltner`, `donchian`, `supertrend`, `chandelier_exit`, `chande_kroll_stop`, `price_channel`, `mass_index`, `bollinger_percent_b`, `bollinger_band_width`, `standard_error`, `volatility_index`
+- **Volume**: `vwap`, `obv`, `mfi`, `chaikin_oscillator`, `emv`, `force_index`, `elder_force_index`, `volume_oscillator`, `volume_profile`, `klinger_oscillator`, `chaikin_money_flow`, `accumulation_distribution`, `money_flow_volume`, `williams_ad`
+- **Trend**: `adx`, `parabolic_sar`, `ichimoku`, `aroon`, `kama`, `detrended`, `williams_alligator`, `vortex`, `bop`, `coppock_curve`, `linear_regression`, `linear_regression_slope`, `correlation_coefficient`
 - **Support/Resistance**: `pivot_points`, `fibonacci`
 - **Advanced Analysis**: `advanced_cci`, `elder_ray`
 - **Candlestick Patterns**: `heikin_ashi`
 - **Oscillators**: `awesome_oscillator`, `accelerator_oscillator`
+- **Statistical**: `price_roc`
 
 ## Utility Functions
 

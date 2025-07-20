@@ -1664,3 +1664,575 @@ func (ti *TechnicalIndicators) calculateVolumeProfile(high, low, close, volume *
 
 	return profile
 }
+
+// calculateRVI calculates Relative Vigor Index
+func (ti *TechnicalIndicators) calculateRVI(open, high, low, close *starlark.List, period int) ([]float64, []float64) {
+	length := close.Len()
+	if length < period {
+		return nil, nil
+	}
+
+	rvi := make([]float64, length)
+	signal := make([]float64, length)
+
+	// Calculate numerator and denominator
+	numerator := make([]float64, length)
+	denominator := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			rvi[i] = math.NaN()
+			signal[i] = math.NaN()
+			continue
+		}
+
+		o, _ := starlark.AsFloat(open.Index(i))
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		c, _ := starlark.AsFloat(close.Index(i))
+
+		numerator[i] = c - o
+		denominator[i] = h - l
+
+		// Calculate RVI as SMA ratio
+		numSum := 0.0
+		denSum := 0.0
+		for j := i - period + 1; j <= i; j++ {
+			o2, _ := starlark.AsFloat(open.Index(j))
+			h2, _ := starlark.AsFloat(high.Index(j))
+			l2, _ := starlark.AsFloat(low.Index(j))
+			c2, _ := starlark.AsFloat(close.Index(j))
+
+			numSum += c2 - o2
+			denSum += h2 - l2
+		}
+
+		if denSum != 0 {
+			rvi[i] = numSum / denSum
+		} else {
+			rvi[i] = 0
+		}
+	}
+
+	// Calculate signal line as SMA of RVI
+	for i := 3; i < length; i++ {
+		if !math.IsNaN(rvi[i]) && !math.IsNaN(rvi[i-1]) && !math.IsNaN(rvi[i-2]) && !math.IsNaN(rvi[i-3]) {
+			signal[i] = (rvi[i] + 2*rvi[i-1] + 2*rvi[i-2] + rvi[i-3]) / 6
+		} else {
+			signal[i] = math.NaN()
+		}
+	}
+
+	return rvi, signal
+}
+
+// calculatePPO calculates Percentage Price Oscillator
+func (ti *TechnicalIndicators) calculatePPO(prices *starlark.List, fastPeriod, slowPeriod, signalPeriod int) ([]float64, []float64, []float64) {
+	length := prices.Len()
+	if length < slowPeriod {
+		return nil, nil, nil
+	}
+
+	// Calculate EMAs
+	fastEMA := ti.calculateEMA(prices, fastPeriod)
+	slowEMA := ti.calculateEMA(prices, slowPeriod)
+
+	// Calculate PPO line (percentage difference)
+	ppo := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(fastEMA[i]) || math.IsNaN(slowEMA[i]) || slowEMA[i] == 0 {
+			ppo[i] = math.NaN()
+		} else {
+			ppo[i] = ((fastEMA[i] - slowEMA[i]) / slowEMA[i]) * 100
+		}
+	}
+
+	// Convert PPO to starlark list for signal calculation
+	ppoList := starlark.NewList(nil)
+	for _, val := range ppo {
+		if !math.IsNaN(val) {
+			ppoList.Append(starlark.Float(val))
+		} else {
+			ppoList.Append(starlark.None)
+		}
+	}
+
+	// Calculate signal line
+	signal := ti.calculateEMA(ppoList, signalPeriod)
+
+	// Calculate histogram
+	histogram := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(ppo[i]) || math.IsNaN(signal[i]) {
+			histogram[i] = math.NaN()
+		} else {
+			histogram[i] = ppo[i] - signal[i]
+		}
+	}
+
+	return ppo, signal, histogram
+}
+
+// calculateAccumulationDistribution calculates Accumulation/Distribution Line
+func (ti *TechnicalIndicators) calculateAccumulationDistribution(high, low, close, volume *starlark.List) []float64 {
+	length := close.Len()
+	if length == 0 {
+		return nil
+	}
+
+	result := make([]float64, length)
+	result[0] = 0
+
+	for i := 1; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		c, _ := starlark.AsFloat(close.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+
+		// Money Flow Multiplier
+		var mfm float64
+		if h != l {
+			mfm = ((c - l) - (h - c)) / (h - l)
+		} else {
+			mfm = 0
+		}
+
+		// Money Flow Volume
+		mfv := mfm * v
+
+		// A/D Line
+		result[i] = result[i-1] + mfv
+	}
+
+	return result
+}
+
+// calculateChaikinMoneyFlow calculates Chaikin Money Flow
+func (ti *TechnicalIndicators) calculateChaikinMoneyFlow(high, low, close, volume *starlark.List, period int) []float64 {
+	length := close.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		sumMFV := 0.0 // Sum of Money Flow Volume
+		sumVolume := 0.0
+
+		for j := i - period + 1; j <= i; j++ {
+			h, _ := starlark.AsFloat(high.Index(j))
+			l, _ := starlark.AsFloat(low.Index(j))
+			c, _ := starlark.AsFloat(close.Index(j))
+			v, _ := starlark.AsFloat(volume.Index(j))
+
+			// Money Flow Multiplier
+			var mfm float64
+			if h != l {
+				mfm = ((c - l) - (h - c)) / (h - l)
+			} else {
+				mfm = 0
+			}
+
+			mfv := mfm * v
+			sumMFV += mfv
+			sumVolume += v
+		}
+
+		if sumVolume != 0 {
+			result[i] = sumMFV / sumVolume
+		} else {
+			result[i] = 0
+		}
+	}
+
+	return result
+}
+
+// calculateLinearRegression calculates Linear Regression
+func (ti *TechnicalIndicators) calculateLinearRegression(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		// Calculate linear regression for the period
+		sumX := 0.0
+		sumY := 0.0
+		sumXY := 0.0
+		sumX2 := 0.0
+
+		for j := 0; j < period; j++ {
+			x := float64(j)
+			y, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+
+			sumX += x
+			sumY += y
+			sumXY += x * y
+			sumX2 += x * x
+		}
+
+		n := float64(period)
+		slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
+		intercept := (sumY - slope*sumX) / n
+
+		// Linear regression value at the end of the period
+		result[i] = intercept + slope*float64(period-1)
+	}
+
+	return result
+}
+
+// calculateLinearRegressionSlope calculates Linear Regression Slope
+func (ti *TechnicalIndicators) calculateLinearRegressionSlope(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		// Calculate linear regression slope for the period
+		sumX := 0.0
+		sumY := 0.0
+		sumXY := 0.0
+		sumX2 := 0.0
+
+		for j := 0; j < period; j++ {
+			x := float64(j)
+			y, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+
+			sumX += x
+			sumY += y
+			sumXY += x * y
+			sumX2 += x * x
+		}
+
+		n := float64(period)
+		slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
+		result[i] = slope
+	}
+
+	return result
+}
+
+// calculateCorrelationCoefficient calculates Correlation Coefficient between price and time
+func (ti *TechnicalIndicators) calculateCorrelationCoefficient(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		// Calculate correlation between price and time
+		sumX := 0.0
+		sumY := 0.0
+		sumXY := 0.0
+		sumX2 := 0.0
+		sumY2 := 0.0
+
+		for j := 0; j < period; j++ {
+			x := float64(j)
+			y, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+
+			sumX += x
+			sumY += y
+			sumXY += x * y
+			sumX2 += x * x
+			sumY2 += y * y
+		}
+
+		n := float64(period)
+		numerator := n*sumXY - sumX*sumY
+		denominator := math.Sqrt((n*sumX2 - sumX*sumX) * (n*sumY2 - sumY*sumY))
+
+		if denominator != 0 {
+			result[i] = numerator / denominator
+		} else {
+			result[i] = 0
+		}
+	}
+
+	return result
+}
+
+// calculateBollingerPercentB calculates Bollinger %B
+func (ti *TechnicalIndicators) calculateBollingerPercentB(prices *starlark.List, period int, multiplier float64) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	// Calculate Bollinger Bands
+	upper, _, lower := ti.calculateBollinger(prices, period, multiplier)
+
+	result := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(upper[i]) || math.IsNaN(lower[i]) {
+			result[i] = math.NaN()
+			continue
+		}
+
+		price, _ := starlark.AsFloat(prices.Index(i))
+		bandWidth := upper[i] - lower[i]
+
+		if bandWidth != 0 {
+			result[i] = (price - lower[i]) / bandWidth
+		} else {
+			result[i] = 0.5 // Middle of bands when width is zero
+		}
+	}
+
+	return result
+}
+
+// calculateBollingerBandWidth calculates Bollinger Band Width
+func (ti *TechnicalIndicators) calculateBollingerBandWidth(prices *starlark.List, period int, multiplier float64) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	// Calculate Bollinger Bands
+	upper, middle, lower := ti.calculateBollinger(prices, period, multiplier)
+
+	result := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(upper[i]) || math.IsNaN(middle[i]) || math.IsNaN(lower[i]) {
+			result[i] = math.NaN()
+			continue
+		}
+
+		bandWidth := upper[i] - lower[i]
+		if middle[i] != 0 {
+			result[i] = bandWidth / middle[i]
+		} else {
+			result[i] = 0
+		}
+	}
+
+	return result
+}
+
+// calculateStandardError calculates Standard Error of Linear Regression
+func (ti *TechnicalIndicators) calculateStandardError(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		// Calculate linear regression
+		sumX := 0.0
+		sumY := 0.0
+		sumXY := 0.0
+		sumX2 := 0.0
+
+		for j := 0; j < period; j++ {
+			x := float64(j)
+			y, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+
+			sumX += x
+			sumY += y
+			sumXY += x * y
+			sumX2 += x * x
+		}
+
+		n := float64(period)
+		slope := (n*sumXY - sumX*sumY) / (n*sumX2 - sumX*sumX)
+		intercept := (sumY - slope*sumX) / n
+
+		// Calculate sum of squared residuals
+		sumSquaredResiduals := 0.0
+		for j := 0; j < period; j++ {
+			x := float64(j)
+			y, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+			predicted := intercept + slope*x
+			residual := y - predicted
+			sumSquaredResiduals += residual * residual
+		}
+
+		// Standard error calculation
+		if n > 2 {
+			result[i] = math.Sqrt(sumSquaredResiduals / (n - 2))
+		} else {
+			result[i] = 0
+		}
+	}
+
+	return result
+}
+
+// calculateWilliamsAD calculates Williams Accumulation/Distribution
+func (ti *TechnicalIndicators) calculateWilliamsAD(high, low, close *starlark.List) []float64 {
+	length := close.Len()
+	if length < 2 {
+		return nil
+	}
+
+	result := make([]float64, length)
+	result[0] = 0
+
+	for i := 1; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		c, _ := starlark.AsFloat(close.Index(i))
+		prevC, _ := starlark.AsFloat(close.Index(i - 1))
+
+		// True Range High and Low
+		trueHigh := math.Max(h, prevC)
+		trueLow := math.Min(l, prevC)
+
+		// Williams A/D calculation
+		if c > prevC {
+			result[i] = result[i-1] + (c - trueLow)
+		} else if c < prevC {
+			result[i] = result[i-1] + (c - trueHigh)
+		} else {
+			result[i] = result[i-1]
+		}
+	}
+
+	return result
+}
+
+// calculateMoneyFlowVolume calculates Money Flow Volume
+func (ti *TechnicalIndicators) calculateMoneyFlowVolume(high, low, close, volume *starlark.List) []float64 {
+	length := close.Len()
+	if length == 0 {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		c, _ := starlark.AsFloat(close.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+
+		// Money Flow Multiplier
+		var mfm float64
+		if h != l {
+			mfm = ((c - l) - (h - c)) / (h - l)
+		} else {
+			mfm = 0
+		}
+
+		// Money Flow Volume
+		result[i] = mfm * v
+	}
+
+	return result
+}
+
+// calculatePriceROC calculates Price Rate of Change
+func (ti *TechnicalIndicators) calculatePriceROC(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period+1 {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period {
+			result[i] = math.NaN()
+			continue
+		}
+
+		currentPrice, _ := starlark.AsFloat(prices.Index(i))
+		pastPrice, _ := starlark.AsFloat(prices.Index(i - period))
+
+		if pastPrice != 0 {
+			result[i] = ((currentPrice - pastPrice) / pastPrice) * 100
+		} else {
+			result[i] = 0
+		}
+	}
+
+	return result
+}
+
+// calculateVolatilityIndex calculates a custom volatility index
+func (ti *TechnicalIndicators) calculateVolatilityIndex(high, low, close *starlark.List, period int) []float64 {
+	length := close.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		// Calculate volatility as standard deviation of returns
+		returns := make([]float64, period-1)
+		for j := 1; j < period; j++ {
+			idx := i - period + 1 + j
+			current, _ := starlark.AsFloat(close.Index(idx))
+			previous, _ := starlark.AsFloat(close.Index(idx - 1))
+			
+			if previous != 0 {
+				returns[j-1] = math.Log(current / previous)
+			} else {
+				returns[j-1] = 0
+			}
+		}
+
+		// Calculate mean return
+		mean := 0.0
+		for _, ret := range returns {
+			mean += ret
+		}
+		mean /= float64(len(returns))
+
+		// Calculate standard deviation
+		variance := 0.0
+		for _, ret := range returns {
+			variance += math.Pow(ret-mean, 2)
+		}
+		variance /= float64(len(returns))
+
+		// Annualized volatility (assuming daily data)
+		result[i] = math.Sqrt(variance) * math.Sqrt(252) * 100
+	}
+
+	return result
+}

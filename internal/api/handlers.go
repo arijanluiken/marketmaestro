@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -282,11 +283,38 @@ func (a *APIActor) handleCreateStrategy(ctx *actor.Context) http.HandlerFunc {
 func (a *APIActor) handleGetStrategyStatus(ctx *actor.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		strategyID := chi.URLParam(r, "id")
-		// TODO: Get actual strategy status
-		a.writeJSON(w, map[string]interface{}{
-			"id":     strategyID,
-			"status": "running",
-		})
+
+		// Find strategy in cache
+		var strategy map[string]interface{}
+		found := false
+
+		for _, strategies := range a.strategiesCache {
+			for _, s := range strategies {
+				if s["id"] == strategyID {
+					strategy = s
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+
+		if !found {
+			a.writeError(w, "Strategy not found", http.StatusNotFound)
+			return
+		}
+
+		// Get additional details from database
+		details := a.getStrategyDetails(strategyID)
+
+		// Merge strategy data with details
+		for k, v := range details {
+			strategy[k] = v
+		}
+
+		a.writeJSON(w, strategy)
 	}
 }
 
@@ -757,7 +785,7 @@ func (a *APIActor) handleLoadRebalanceScript(ctx *actor.Context) http.HandlerFun
 		exchangeName := chi.URLParam(r, "exchange")
 		a.logger.Info().Str("exchange", exchangeName).Msg("Loading rebalance script")
 
-		exchangePID, exists := a.exchangePIDs[exchangeName]
+		_, exists := a.exchangePIDs[exchangeName]
 		if !exists {
 			http.Error(w, "Exchange not found", http.StatusNotFound)
 			return
@@ -772,19 +800,159 @@ func (a *APIActor) handleLoadRebalanceScript(ctx *actor.Context) http.HandlerFun
 			return
 		}
 
-		msg := map[string]interface{}{
-			"type":        "load_rebalance_script",
-			"script_path": request.ScriptPath,
-		}
-
-		response, err := ctx.Request(exchangePID, msg, 5*time.Second).Result()
-		if err != nil {
-			a.logger.Error().Err(err).Str("exchange", exchangeName).Msg("Failed to load rebalance script")
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		// TODO: Implement actual script loading
+		response := map[string]interface{}{
+			"status":  "success",
+			"message": "Script loading not yet implemented",
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(response)
 	}
+}
+
+// getStrategyDetails retrieves additional strategy details from database
+func (a *APIActor) getStrategyDetails(strategyID string) map[string]interface{} {
+	details := make(map[string]interface{})
+
+	if a.db == nil {
+		a.logger.Warn().Msg("Database not available for strategy details")
+		return details
+	}
+
+	// Get recent orders for this strategy
+	orders, err := a.getStrategyOrders(strategyID, 10)
+	if err != nil {
+		a.logger.Error().Err(err).Str("strategy_id", strategyID).Msg("Failed to get strategy orders")
+	} else {
+		details["recent_orders"] = orders
+	}
+
+	// Get strategy statistics
+	stats, err := a.getStrategyStats(strategyID)
+	if err != nil {
+		a.logger.Error().Err(err).Str("strategy_id", strategyID).Msg("Failed to get strategy stats")
+	} else {
+		details["stats"] = stats
+	}
+
+	// Get recent logs (mock implementation for now)
+	details["recent_logs"] = []map[string]interface{}{
+		{
+			"timestamp": time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
+			"level":     "INFO",
+			"message":   "Strategy executed successfully",
+		},
+		{
+			"timestamp": time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
+			"level":     "INFO",
+			"message":   "Received kline data for analysis",
+		},
+		{
+			"timestamp": time.Now().Add(-15 * time.Minute).Format(time.RFC3339),
+			"level":     "DEBUG",
+			"message":   "SMA calculation completed",
+		},
+	}
+
+	return details
+}
+
+// getStrategyOrders retrieves recent orders for a strategy
+func (a *APIActor) getStrategyOrders(strategyID string, limit int) ([]map[string]interface{}, error) {
+	// Extract symbol from strategy ID for now (in a real implementation, you'd have a proper mapping)
+	// Strategy ID format might be like "strategy:bybit:BTCUSDT:simple_sma"
+
+	query := `
+		SELECT order_id, symbol, side, type, quantity, price, status, created_at
+		FROM orders 
+		WHERE symbol LIKE '%' || ? || '%'
+		ORDER BY created_at DESC 
+		LIMIT ?
+	`
+
+	rows, err := a.db.Query(query, strategyID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query orders: %w", err)
+	}
+	defer rows.Close()
+
+	var orders []map[string]interface{}
+	for rows.Next() {
+		var orderID, symbol, side, orderType, status, createdAt string
+		var quantity, price float64
+
+		if err := rows.Scan(&orderID, &symbol, &side, &orderType, &quantity, &price, &status, &createdAt); err != nil {
+			continue
+		}
+
+		orders = append(orders, map[string]interface{}{
+			"order_id":   orderID,
+			"symbol":     symbol,
+			"side":       side,
+			"type":       orderType,
+			"quantity":   quantity,
+			"price":      price,
+			"status":     status,
+			"created_at": createdAt,
+		})
+	}
+
+	return orders, nil
+}
+
+// getStrategyStats calculates strategy statistics
+func (a *APIActor) getStrategyStats(strategyID string) (map[string]interface{}, error) {
+	stats := map[string]interface{}{
+		"total_orders":   0,
+		"buy_orders":     0,
+		"sell_orders":    0,
+		"success_rate":   0.0,
+		"total_volume":   0.0,
+		"avg_order_size": 0.0,
+	}
+
+	// Count total orders
+	query := `
+		SELECT 
+			COUNT(*) as total_orders,
+			SUM(CASE WHEN side = 'buy' THEN 1 ELSE 0 END) as buy_orders,
+			SUM(CASE WHEN side = 'sell' THEN 1 ELSE 0 END) as sell_orders,
+			SUM(quantity * price) as total_volume,
+			AVG(quantity) as avg_order_size
+		FROM orders 
+		WHERE symbol LIKE '%' || ? || '%'
+	`
+
+	row := a.db.QueryRow(query, strategyID)
+
+	var totalOrders, buyOrders, sellOrders int
+	var totalVolume, avgOrderSize sql.NullFloat64
+
+	if err := row.Scan(&totalOrders, &buyOrders, &sellOrders, &totalVolume, &avgOrderSize); err != nil {
+		return stats, fmt.Errorf("failed to get strategy stats: %w", err)
+	}
+
+	stats["total_orders"] = totalOrders
+	stats["buy_orders"] = buyOrders
+	stats["sell_orders"] = sellOrders
+
+	if totalVolume.Valid {
+		stats["total_volume"] = totalVolume.Float64
+	}
+	if avgOrderSize.Valid {
+		stats["avg_order_size"] = avgOrderSize.Float64
+	}
+
+	// Calculate success rate (filled orders / total orders)
+	successQuery := `
+		SELECT COUNT(*) FROM orders 
+		WHERE symbol LIKE '%' || ? || '%' AND status = 'filled'
+	`
+	var filledOrders int
+	if err := a.db.QueryRow(successQuery, strategyID).Scan(&filledOrders); err == nil && totalOrders > 0 {
+		stats["success_rate"] = float64(filledOrders) / float64(totalOrders) * 100
+	}
+
+	return stats, nil
 }

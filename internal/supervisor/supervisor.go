@@ -131,7 +131,12 @@ func (s *Supervisor) onStart(ctx *actor.Context) {
 
 	// Start API actor
 	apiActorPID := ctx.SpawnChild(func() actor.Receiver {
-		return api.New(s.config, s.logger.With().Str("actor", "api").Logger())
+		apiActor := api.New(s.config, s.logger.With().Str("actor", "api").Logger())
+		// Pass database connection to API actor
+		if s.db != nil {
+			apiActor.SetDatabase(s.db.Conn())
+		}
+		return apiActor
 	}, "api")
 	s.apiActor = apiActorPID
 

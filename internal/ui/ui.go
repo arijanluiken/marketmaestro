@@ -469,6 +469,269 @@ const settingsTemplate = baseTemplate + `
 {{end}}
 `
 
+const strategyDetailsTemplate = baseTemplate + `
+{{define "content"}}
+<div class="page-content">
+    <!-- Back Button -->
+    <div class="mb-3">
+        <a href="/strategies" class="btn btn-secondary">
+            ← Back to Strategies
+        </a>
+    </div>
+
+    <!-- Strategy Header -->
+    <div class="card">
+        <div class="d-flex justify-content-between align-items-center">
+            <div>
+                <h2 id="strategy-name">Loading...</h2>
+                <p class="text-muted" id="strategy-info">Loading strategy details...</p>
+            </div>
+            <div class="strategy-actions" id="strategy-actions">
+                <div class="loading">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Strategy Metrics -->
+    <div class="metrics-grid">
+        <div class="metric-card">
+            <div class="metric-value" id="strategy-status">-</div>
+            <div class="metric-label">Status</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value" id="strategy-pnl">-</div>
+            <div class="metric-label">P&L</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value" id="total-orders">-</div>
+            <div class="metric-label">Total Orders</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value" id="success-rate">-</div>
+            <div class="metric-label">Success Rate</div>
+        </div>
+    </div>
+
+    <div class="grid">
+        <!-- Strategy Statistics -->
+        <div class="card">
+            <h3>Statistics</h3>
+            <div id="strategy-stats">
+                <div class="loading">Loading statistics...</div>
+            </div>
+        </div>
+
+        <!-- Recent Orders -->
+        <div class="card">
+            <h3>Recent Orders</h3>
+            <div id="recent-orders">
+                <div class="loading">Loading orders...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Recent Logs -->
+    <div class="card">
+        <h3>Recent Logs</h3>
+        <div id="recent-logs">
+            <div class="loading">Loading logs...</div>
+        </div>
+    </div>
+</div>
+{{end}}
+
+{{define "scripts"}}
+<script>
+let strategyId = null;
+
+async function loadStrategyDetails() {
+    // Get strategy ID from URL
+    const pathParts = window.location.pathname.split('/');
+    strategyId = pathParts[pathParts.length - 1];
+    
+    if (!strategyId) {
+        document.getElementById('strategy-name').textContent = 'Strategy Not Found';
+        document.getElementById('strategy-info').textContent = 'Invalid strategy ID';
+        return;
+    }
+
+    try {
+        const data = await MercantileUI.API.strategies.get(strategyId);
+        displayStrategyDetails(data);
+    } catch (error) {
+        console.error('Error loading strategy details:', error);
+        document.getElementById('strategy-name').textContent = 'Error Loading Strategy';
+        document.getElementById('strategy-info').textContent = 'Failed to load strategy details: ' + error.message;
+    }
+}
+
+function displayStrategyDetails(strategy) {
+    // Update header
+    document.getElementById('strategy-name').textContent = strategy.name || 'Unknown Strategy';
+    document.getElementById('strategy-info').textContent = 
+        (strategy.symbol || 'N/A') + ' • ' + (strategy.exchange || 'N/A');
+
+    // Update metrics
+    const statusEl = document.getElementById('strategy-status');
+    statusEl.textContent = strategy.status || 'Unknown';
+    statusEl.className = 'metric-value ' + MercantileUI.Utils.getStatusClass(strategy.status);
+
+    const pnlEl = document.getElementById('strategy-pnl');
+    const pnlValue = parseFloat(strategy.pnl?.replace(/[^-\d.]/g, '') || '0');
+    pnlEl.textContent = strategy.pnl || '$0.00';
+    pnlEl.className = 'metric-value ' + MercantileUI.Utils.getPnLClass(pnlValue);
+
+    // Update statistics
+    if (strategy.stats) {
+        document.getElementById('total-orders').textContent = strategy.stats.total_orders || 0;
+        document.getElementById('success-rate').textContent = 
+            (strategy.stats.success_rate || 0).toFixed(1) + '%';
+        
+        displayStatistics(strategy.stats);
+    }
+
+    // Update actions
+    const actions = strategy.status === 'running' 
+        ? '<button class="btn btn-warning" onclick="stopStrategy()">Stop</button> ' +
+          '<button class="btn btn-secondary" onclick="restartStrategy()">Restart</button>'
+        : '<button class="btn btn-success" onclick="startStrategy()">Start</button>';
+    
+    document.getElementById('strategy-actions').innerHTML = actions;
+
+    // Display recent orders
+    if (strategy.recent_orders) {
+        displayRecentOrders(strategy.recent_orders);
+    } else {
+        document.getElementById('recent-orders').innerHTML = '<div class="empty-state">No recent orders</div>';
+    }
+
+    // Display recent logs
+    if (strategy.recent_logs) {
+        displayRecentLogs(strategy.recent_logs);
+    } else {
+        document.getElementById('recent-logs').innerHTML = '<div class="empty-state">No recent logs</div>';
+    }
+}
+
+function displayStatistics(stats) {
+    const statsHtml = '<div class="stats-grid">' +
+        '<div class="stat-item">' +
+            '<div class="stat-value">' + (stats.buy_orders || 0) + '</div>' +
+            '<div class="stat-label">Buy Orders</div>' +
+        '</div>' +
+        '<div class="stat-item">' +
+            '<div class="stat-value">' + (stats.sell_orders || 0) + '</div>' +
+            '<div class="stat-label">Sell Orders</div>' +
+        '</div>' +
+        '<div class="stat-item">' +
+            '<div class="stat-value">' + MercantileUI.Utils.formatCurrency(stats.total_volume || 0) + '</div>' +
+            '<div class="stat-label">Total Volume</div>' +
+        '</div>' +
+        '<div class="stat-item">' +
+            '<div class="stat-value">' + MercantileUI.Utils.formatNumber(stats.avg_order_size || 0, 4) + '</div>' +
+            '<div class="stat-label">Avg Order Size</div>' +
+        '</div>' +
+    '</div>';
+    
+    document.getElementById('strategy-stats').innerHTML = statsHtml;
+}
+
+function displayRecentOrders(orders) {
+    if (!orders || orders.length === 0) {
+        document.getElementById('recent-orders').innerHTML = '<div class="empty-state">No recent orders</div>';
+        return;
+    }
+
+    const tableHtml = '<table class="data-table">' +
+        '<thead>' +
+            '<tr>' +
+                '<th>Time</th>' +
+                '<th>Side</th>' +
+                '<th>Type</th>' +
+                '<th>Quantity</th>' +
+                '<th>Price</th>' +
+                '<th>Status</th>' +
+            '</tr>' +
+        '</thead>' +
+        '<tbody>' +
+            orders.map(order => {
+                const time = new Date(order.created_at).toLocaleTimeString();
+                const sideClass = order.side === 'buy' ? 'text-success' : 'text-danger';
+                const statusClass = MercantileUI.Utils.getStatusClass(order.status);
+                
+                return '<tr>' +
+                    '<td>' + time + '</td>' +
+                    '<td class="' + sideClass + '">' + order.side.toUpperCase() + '</td>' +
+                    '<td>' + order.type + '</td>' +
+                    '<td>' + MercantileUI.Utils.formatNumber(order.quantity, 4) + '</td>' +
+                    '<td>' + MercantileUI.Utils.formatCurrency(order.price) + '</td>' +
+                    '<td class="' + statusClass + '">' + order.status + '</td>' +
+                '</tr>';
+            }).join('') +
+        '</tbody>' +
+    '</table>';
+    
+    document.getElementById('recent-orders').innerHTML = tableHtml;
+}
+
+function displayRecentLogs(logs) {
+    if (!logs || logs.length === 0) {
+        document.getElementById('recent-logs').innerHTML = '<div class="empty-state">No recent logs</div>';
+        return;
+    }
+
+    const logsHtml = '<div class="logs-container">' +
+        logs.map(log => {
+            const time = new Date(log.timestamp).toLocaleTimeString();
+            const levelClass = 'log-' + log.level.toLowerCase();
+            
+            return '<div class="log-entry">' +
+                '<span class="log-time">' + time + '</span> ' +
+                '<span class="log-level ' + levelClass + '">' + log.level + '</span> ' +
+                '<span class="log-message">' + log.message + '</span>' +
+            '</div>';
+        }).join('') +
+    '</div>';
+    
+    document.getElementById('recent-logs').innerHTML = logsHtml;
+}
+
+async function startStrategy() {
+    try {
+        await MercantileUI.API.strategies.start(strategyId);
+        MercantileUI.Strategy.showNotification('Strategy started successfully', 'success');
+        loadStrategyDetails(); // Refresh
+    } catch (error) {
+        MercantileUI.Strategy.showNotification('Failed to start strategy: ' + error.message, 'error');
+    }
+}
+
+async function stopStrategy() {
+    try {
+        await MercantileUI.API.strategies.stop(strategyId);
+        MercantileUI.Strategy.showNotification('Strategy stopped successfully', 'success');
+        loadStrategyDetails(); // Refresh
+    } catch (error) {
+        MercantileUI.Strategy.showNotification('Failed to stop strategy: ' + error.message, 'error');
+    }
+}
+
+async function restartStrategy() {
+    try {
+        await MercantileUI.API.strategies.restart(strategyId);
+        MercantileUI.Strategy.showNotification('Strategy restarted successfully', 'success');
+        loadStrategyDetails(); // Refresh
+    } catch (error) {
+        MercantileUI.Strategy.showNotification('Failed to restart strategy: ' + error.message, 'error');
+    }
+}
+
+// Initialize strategy details page
+MercantileUI.AutoRefresh.start('strategyDetails', loadStrategyDetails, 30000);
+</script>
+{{end}}
+`
+
 // Messages for UI actor communication
 type (
 	StartServerMsg struct{}
@@ -589,6 +852,7 @@ func (u *UIActor) setupRouter() {
 	r.Get("/", u.handleIndex)
 	r.Get("/dashboard", u.handleDashboard)
 	r.Get("/strategies", u.handleStrategies)
+	r.Get("/strategies/{id}", u.handleStrategyDetails)
 	r.Get("/portfolio", u.handlePortfolio)
 	r.Get("/settings", u.handleSettings)
 
@@ -636,6 +900,15 @@ func (u *UIActor) handleStrategies(w http.ResponseWriter, r *http.Request) {
 		Subtitle:    "Strategy Management",
 	}
 	u.renderTemplate(w, strategiesTemplate, data)
+}
+
+func (u *UIActor) handleStrategyDetails(w http.ResponseWriter, r *http.Request) {
+	data := BasePageData{
+		Title:       "Strategy Details",
+		CurrentPage: "/strategies",
+		Subtitle:    "Strategy Details",
+	}
+	u.renderTemplate(w, strategyDetailsTemplate, data)
 }
 
 func (u *UIActor) handlePortfolio(w http.ResponseWriter, r *http.Request) {

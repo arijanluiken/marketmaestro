@@ -143,3 +143,7 @@ Do not implement mock functions always use live data or testnet environments for
 # API
 
 Ensure all API endpoints are documented in the OpenAPI specification. When adding new features to the bot also expose an API for the features. The api endpoint should be fully functional and never use mock data.
+
+# Logging
+
+Only add logs that are actionable and provide value. Avoid excessive logging that clutters the output. Use structured logging with zerolog for better traceability.

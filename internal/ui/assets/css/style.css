@@ -423,3 +423,104 @@ body {
 .flex-wrap { flex-wrap: wrap; }
 .gap-2 { gap: 16px; }
 .gap-3 { gap: 24px; }
+
+/* Strategy Details Page */
+.strategy-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.strategy-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+}
+
+.stat-item {
+    background: #f8f9fa;
+    padding: 16px;
+    border-radius: 6px;
+    text-align: center;
+}
+
+.stat-value {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 4px;
+}
+
+.stat-label {
+    color: #6c757d;
+    font-size: 0.875rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.logs-container {
+    background: #f8f9fa;
+    border-radius: 6px;
+    padding: 16px;
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+}
+
+.log-entry {
+    padding: 4px 0;
+    border-bottom: 1px solid #e9ecef;
+    font-size: 0.875rem;
+}
+
+.log-entry:last-child {
+    border-bottom: none;
+}
+
+.log-time {
+    color: #6c757d;
+    font-weight: 500;
+}
+
+.log-level {
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 0.75rem;
+    text-transform: uppercase;
+}
+
+.log-info {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.log-debug {
+    background: #d4edda;
+    color: #155724;
+}
+
+.log-warn {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.log-error {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.log-message {
+    color: #495057;
+    margin-left: 8px;
+}
+
+.strategy-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}

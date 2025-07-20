@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"time"
@@ -44,6 +45,7 @@ type APIActor struct {
 	strategiesCache map[string][]map[string]interface{} // exchange name -> strategies
 	portfolioCache  map[string]map[string]interface{}   // exchange name -> portfolio data
 	ordersCache     map[string][]map[string]interface{} // exchange name -> orders
+	db              *sql.DB                             // database connection
 }
 
 // New creates a new API actor
@@ -68,6 +70,11 @@ func New(cfg *config.Config, logger zerolog.Logger) *APIActor {
 // SetSupervisorPID sets the supervisor actor PID for communication
 func (a *APIActor) SetSupervisorPID(pid *actor.PID) {
 	a.supervisorPID = pid
+}
+
+// SetDatabase sets the database connection for the API actor
+func (a *APIActor) SetDatabase(db *sql.DB) {
+	a.db = db
 }
 
 // Receive handles incoming messages
@@ -325,6 +332,7 @@ func (a *APIActor) setupRouter(ctx *actor.Context) {
 		r.Route("/strategies", func(r chi.Router) {
 			r.Get("/", a.handleGetStrategies(ctx))
 			r.Post("/", a.handleCreateStrategy(ctx))
+			r.Get("/{id}", a.handleGetStrategyStatus(ctx))
 			r.Get("/{id}/status", a.handleGetStrategyStatus(ctx))
 			r.Post("/{id}/start", a.handleStartStrategy(ctx))
 			r.Post("/{id}/stop", a.handleStopStrategy(ctx))

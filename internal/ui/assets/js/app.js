@@ -229,7 +229,7 @@ const Components = {
             : `<button class="btn btn-success btn-sm" onclick="Strategy.start('${strategy.id}')">Start</button>`;
 
         return `
-            <div class="card">
+            <div class="card strategy-card" onclick="navigateToStrategy('${strategy.id}')" style="cursor: pointer;">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
                         <h4 class="mb-1">${strategy.name}</h4>
@@ -239,8 +239,9 @@ const Components = {
                             <span class="badge ${pnlClass}">${strategy.pnl || '$0.00'}</span>
                         </div>
                     </div>
-                    <div class="text-right">
+                    <div class="text-right" onclick="event.stopPropagation();">
                         ${actions}
+                        <button class="btn btn-info btn-sm" onclick="navigateToStrategy('${strategy.id}')">Details</button>
                     </div>
                 </div>
             </div>
@@ -387,6 +388,11 @@ document.addEventListener('DOMContentLoaded', () => {
 window.addEventListener('error', (event) => {
     console.error('Global error:', event.error);
 });
+
+// Navigation helper
+function navigateToStrategy(strategyId) {
+    window.location.href = `/strategies/${strategyId}`;
+}
 
 // Export for use in other scripts
 window.MercantileUI = {

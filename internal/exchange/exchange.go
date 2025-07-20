@@ -159,7 +159,7 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 }
 
 func (e *ExchangeActor) onStarted(ctx *actor.Context) {
-	e.logger.Info().Str("exchange", e.exchangeName).Msg("Exchange actor started")
+	e.logger.Debug().Str("exchange", e.exchangeName).Msg("Exchange actor started")
 
 	// Store actor system for sending messages from callbacks
 	e.actorSystem = ctx.Engine()
@@ -236,7 +236,7 @@ func (e *ExchangeActor) startConfiguredStrategies(ctx *actor.Context) {
 }
 
 func (e *ExchangeActor) onStopped(ctx *actor.Context) {
-	e.logger.Info().Str("exchange", e.exchangeName).Msg("Exchange actor stopped")
+	e.logger.Debug().Str("exchange", e.exchangeName).Msg("Exchange actor stopped")
 
 	if e.exchange != nil && e.connected {
 		e.exchange.Disconnect()
@@ -303,7 +303,7 @@ func (e *ExchangeActor) startChildActors(ctx *actor.Context) {
 		PortfolioPID:    portfolioPID,
 	})
 
-	e.logger.Info().Msg("Child actors started and wired successfully")
+	e.logger.Debug().Msg("Child actors started and wired successfully")
 }
 
 func (e *ExchangeActor) onConnect(ctx *actor.Context) {
@@ -347,7 +347,7 @@ func (e *ExchangeActor) onConnect(ctx *actor.Context) {
 	}
 
 	e.connected = true
-	e.logger.Info().Msg("Successfully connected to exchange")
+	e.logger.Debug().Msg("Successfully connected to exchange")
 
 	// Provide exchange interface to order manager
 	if e.orderManagerPID != nil {
@@ -370,16 +370,16 @@ func (e *ExchangeActor) onDisconnect(ctx *actor.Context) {
 	}
 
 	e.connected = false
-	e.logger.Info().Msg("Disconnected from exchange")
+	e.logger.Debug().Msg("Disconnected from exchange")
 }
 
 func (e *ExchangeActor) onSubscribeKlines(ctx *actor.Context, msg SubscribeKlinesMsg) {
 	if !e.connected {
-		e.logger.Error().Msg("Cannot subscribe to klines: not connected")
+		e.logger.Debug().Msg("Cannot subscribe to klines: not connected")
 		return
 	}
 
-	e.logger.Info().
+	e.logger.Debug().
 		Strs("symbols", msg.Symbols).
 		Str("interval", msg.Interval).
 		Msg("Subscribing to klines")
@@ -399,11 +399,11 @@ func (e *ExchangeActor) onSubscribeKlines(ctx *actor.Context, msg SubscribeKline
 
 func (e *ExchangeActor) onSubscribeOrderBook(ctx *actor.Context, msg SubscribeOrderBookMsg) {
 	if !e.connected {
-		e.logger.Error().Msg("Cannot subscribe to order book: not connected")
+		e.logger.Debug().Msg("Cannot subscribe to order book: not connected")
 		return
 	}
 
-	e.logger.Info().
+	e.logger.Debug().
 		Strs("symbols", msg.Symbols).
 		Msg("Subscribing to order book")
 
@@ -765,7 +765,7 @@ func (e *ExchangeActor) NotifyTradeExecution(order *exchanges.Order) {
 // Portfolio-specific request handlers
 func (e *ExchangeActor) onPortfolioRequestBalances(ctx *actor.Context) {
 	if !e.connected {
-		e.logger.Error().Msg("Cannot get balances for portfolio: not connected")
+		e.logger.Debug().Msg("Cannot get balances for portfolio: not connected")
 		return
 	}
 
@@ -799,7 +799,7 @@ func (e *ExchangeActor) onPortfolioRequestBalances(ctx *actor.Context) {
 
 func (e *ExchangeActor) onPortfolioRequestPositions(ctx *actor.Context) {
 	if !e.connected {
-		e.logger.Error().Msg("Cannot get positions for portfolio: not connected")
+		e.logger.Debug().Msg("Cannot get positions for portfolio: not connected")
 		return
 	}
 
@@ -835,7 +835,7 @@ func (e *ExchangeActor) onPortfolioRequestPositions(ctx *actor.Context) {
 
 func (e *ExchangeActor) onSetAPIActor(ctx *actor.Context, msg SetAPIActorMsg) {
 	e.apiActorPID = msg.APIActorPID
-	e.logger.Info().Msg("API actor reference set")
+	e.logger.Debug().Msg("API actor reference set")
 }
 
 // sendPortfolioDataToAPI sends portfolio data (balances and positions) to the API actor

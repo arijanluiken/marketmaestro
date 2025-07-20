@@ -92,11 +92,11 @@ func (b *BybitExchange) GetName() string {
 
 // Connect establishes connection to the exchange
 func (b *BybitExchange) Connect(ctx context.Context) error {
-	b.logger.Info().Bool("testnet", b.testnet).Msg("Connecting to Bybit")
+	b.logger.Debug().Bool("testnet", b.testnet).Msg("Connecting to Bybit")
 
 	// Test REST API connection
 	if b.testnet {
-		b.logger.Info().Msg("Using Bybit testnet")
+		b.logger.Debug().Msg("Using Bybit testnet")
 	}
 
 	// Initialize WebSocket connection
@@ -106,7 +106,7 @@ func (b *BybitExchange) Connect(ctx context.Context) error {
 	}
 
 	b.connected = true
-	b.logger.Info().Msg("Successfully connected to Bybit")
+	b.logger.Debug().Msg("Successfully connected to Bybit")
 	return nil
 }
 
@@ -132,7 +132,7 @@ func (b *BybitExchange) connectWebSocket() error {
 	// Start WebSocket message handler
 	go b.handleWebSocketMessages()
 
-	b.logger.Info().Str("url", wsURL).Msg("WebSocket connected")
+	b.logger.Debug().Str("url", wsURL).Msg("WebSocket connected")
 	return nil
 }
 
@@ -277,7 +277,7 @@ func (b *BybitExchange) extractIntervalFromTopic(topic string) string {
 
 // Disconnect closes connection to the exchange
 func (b *BybitExchange) Disconnect() error {
-	b.logger.Info().Msg("Disconnecting from Bybit")
+	b.logger.Debug().Msg("Disconnecting from Bybit")
 
 	b.cancel() // Cancel context to stop goroutines
 
@@ -327,7 +327,7 @@ func (b *BybitExchange) SubscribeKlines(ctx context.Context, symbols []string, i
 			return fmt.Errorf("failed to subscribe to %s: %w", topic, err)
 		}
 
-		b.logger.Info().Str("topic", topic).Msg("Subscribed to kline")
+		b.logger.Debug().Str("topic", topic).Msg("Subscribed to kline")
 	}
 
 	return nil
@@ -356,7 +356,7 @@ func (b *BybitExchange) SubscribeOrderBook(ctx context.Context, symbols []string
 			return fmt.Errorf("failed to subscribe to %s: %w", topic, err)
 		}
 
-		b.logger.Info().Str("topic", topic).Msg("Subscribed to orderbook")
+		b.logger.Debug().Str("topic", topic).Msg("Subscribed to orderbook")
 	}
 
 	return nil
@@ -422,7 +422,7 @@ func (b *BybitExchange) reverseMapInterval(bybitInterval string) string {
 
 // UnsubscribeKlines unsubscribes from kline data
 func (b *BybitExchange) UnsubscribeKlines(symbols []string) error {
-	b.logger.Info().Strs("symbols", symbols).Msg("Unsubscribing from klines")
+	b.logger.Debug().Strs("symbols", symbols).Msg("Unsubscribing from klines")
 
 	for _, symbol := range symbols {
 		// Remove all kline subscriptions for this symbol
@@ -447,7 +447,7 @@ func (b *BybitExchange) UnsubscribeKlines(symbols []string) error {
 
 // UnsubscribeOrderBook unsubscribes from order book data
 func (b *BybitExchange) UnsubscribeOrderBook(symbols []string) error {
-	b.logger.Info().Strs("symbols", symbols).Msg("Unsubscribing from order book")
+	b.logger.Debug().Strs("symbols", symbols).Msg("Unsubscribing from order book")
 
 	for _, symbol := range symbols {
 		topic := fmt.Sprintf("orderbook.1.%s", symbol)

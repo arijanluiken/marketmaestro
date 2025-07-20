@@ -108,7 +108,7 @@ func (a *APIActor) Receive(ctx *actor.Context) {
 }
 
 func (a *APIActor) onStarted(ctx *actor.Context) {
-	a.logger.Info().Msg("API actor started")
+	a.logger.Debug().Msg("API actor started")
 
 	// Get supervisor PID from parent
 	if ctx.Parent() != nil {
@@ -123,7 +123,7 @@ func (a *APIActor) onStarted(ctx *actor.Context) {
 }
 
 func (a *APIActor) onStopped(ctx *actor.Context) {
-	a.logger.Info().Msg("API actor stopped")
+	a.logger.Debug().Msg("API actor stopped")
 
 	if a.server != nil {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -843,64 +843,150 @@ func (b *BybitExchange) mapIntervalToV5(interval string) string {
 
 // GetOrderBook retrieves order book data
 func (b *BybitExchange) GetOrderBook(ctx context.Context, symbol string, limit int) (*OrderBook, error) {
-	// Mock implementation
+	b.logger.Info().
+		Str("symbol", symbol).
+		Int("limit", limit).
+		Msg("Fetching order book from Bybit API")
+
+	param := bybit.V5GetOrderbookParam{
+		Category: bybit.CategoryV5Spot,
+		Symbol:   bybit.SymbolV5(symbol),
+		Limit:    &limit,
+	}
+
+	resp, err := b.client.V5().Market().GetOrderbook(param)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("Failed to get order book")
+		return nil, fmt.Errorf("failed to get order book: %w", err)
+	}
+
+	var bids, asks []OrderBookEntry
+
+	// Parse bids
+	for _, bid := range resp.Result.Bids {
+		price, _ := strconv.ParseFloat(bid.Price, 64)
+		quantity, _ := strconv.ParseFloat(bid.Quantity, 64)
+		bids = append(bids, OrderBookEntry{Price: price, Quantity: quantity})
+	}
+
+	// Parse asks
+	for _, ask := range resp.Result.Asks {
+		price, _ := strconv.ParseFloat(ask.Price, 64)
+		quantity, _ := strconv.ParseFloat(ask.Quantity, 64)
+		asks = append(asks, OrderBookEntry{Price: price, Quantity: quantity})
+	}
+
 	return &OrderBook{
 		Symbol:    symbol,
-		Timestamp: time.Now(),
-		Bids: []OrderBookEntry{
-			{Price: 49950.0, Quantity: 1.5},
-			{Price: 49940.0, Quantity: 2.0},
-		},
-		Asks: []OrderBookEntry{
-			{Price: 50050.0, Quantity: 1.2},
-			{Price: 50060.0, Quantity: 1.8},
-		},
+		Timestamp: time.Unix(resp.Result.Timestamp/1000, 0),
+		Bids:      bids,
+		Asks:      asks,
 	}, nil
 }
 
 // GetTicker retrieves ticker information
 func (b *BybitExchange) GetTicker(ctx context.Context, symbol string) (*Ticker, error) {
-	// Mock implementation
+	b.logger.Info().
+		Str("symbol", symbol).
+		Msg("Fetching ticker from Bybit API")
+
+	param := bybit.V5GetTickersParam{
+		Category: bybit.CategoryV5Spot,
+		Symbol:   (*bybit.SymbolV5)(&symbol),
+	}
+
+	resp, err := b.client.V5().Market().GetTickers(param)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("Failed to get ticker")
+		return nil, fmt.Errorf("failed to get ticker: %w", err)
+	}
+
+	if resp.Result.Spot == nil || len(resp.Result.Spot.List) == 0 {
+		return nil, fmt.Errorf("no ticker data found for symbol %s", symbol)
+	}
+
+	ticker := resp.Result.Spot.List[0]
+
+	price, _ := strconv.ParseFloat(ticker.LastPrice, 64)
+	volume, _ := strconv.ParseFloat(ticker.Volume24H, 64)
+	prevPrice, _ := strconv.ParseFloat(ticker.PrevPrice24H, 64)
+	change := price - prevPrice
+	changePercent, _ := strconv.ParseFloat(ticker.Price24HPcnt, 64)
+
 	return &Ticker{
 		Symbol:    symbol,
-		Price:     50000.0,
-		Volume:    1000.0,
-		Change:    500.0,
-		ChangeP:   1.0,
+		Price:     price,
+		Volume:    volume,
+		Change:    change,
+		ChangeP:   changePercent,
 		Timestamp: time.Now(),
 	}, nil
 }
 
 // GetExchangeInfo retrieves exchange information
 func (b *BybitExchange) GetExchangeInfo(ctx context.Context) (*ExchangeInfo, error) {
-	// Mock implementation
+	b.logger.Info().Msg("Fetching exchange info from Bybit API")
+
+	param := bybit.V5GetInstrumentsInfoParam{
+		Category: bybit.CategoryV5Spot,
+	}
+
+	resp, err := b.client.V5().Market().GetInstrumentsInfo(param)
+	if err != nil {
+		b.logger.Error().Err(err).Msg("Failed to get exchange info")
+		return nil, fmt.Errorf("failed to get exchange info: %w", err)
+	}
+
+	if resp.Result.Spot == nil {
+		return nil, fmt.Errorf("no spot instruments data found")
+	}
+
+	var symbols []*Symbol
+	for _, instrument := range resp.Result.Spot.List {
+		// Parse numeric values with error handling
+		minOrderQty, _ := strconv.ParseFloat(instrument.LotSizeFilter.MinOrderQty, 64)
+		maxOrderQty, _ := strconv.ParseFloat(instrument.LotSizeFilter.MaxOrderQty, 64)
+		minOrderAmt, _ := strconv.ParseFloat(instrument.LotSizeFilter.MinOrderAmt, 64)
+		maxOrderAmt, _ := strconv.ParseFloat(instrument.LotSizeFilter.MaxOrderAmt, 64)
+
+		// Parse precision from filter values
+		tickSize, _ := strconv.ParseFloat(instrument.PriceFilter.TickSize, 64)
+		basePrecision, _ := strconv.ParseFloat(instrument.LotSizeFilter.BasePrecision, 64)
+
+		pricePrecision := calculatePrecision(tickSize)
+		quantityPrecision := calculatePrecision(basePrecision)
+
+		symbols = append(symbols, &Symbol{
+			Name:              string(instrument.Symbol),
+			BaseAsset:         string(instrument.BaseCoin),
+			QuoteAsset:        string(instrument.QuoteCoin),
+			Status:            string(instrument.Status),
+			MinOrderSize:      minOrderQty,
+			MaxOrderSize:      maxOrderQty,
+			MinPrice:          minOrderAmt, // Use minimum order amount as min price proxy
+			MaxPrice:          maxOrderAmt, // Use maximum order amount as max price proxy
+			PricePrecision:    pricePrecision,
+			QuantityPrecision: quantityPrecision,
+		})
+	}
+
 	return &ExchangeInfo{
-		Name: b.name,
-		Symbols: []*Symbol{
-			{
-				Name:              "BTCUSDT",
-				BaseAsset:         "BTC",
-				QuoteAsset:        "USDT",
-				Status:            "trading",
-				MinOrderSize:      0.001,
-				MaxOrderSize:      1000.0,
-				MinPrice:          0.01,
-				MaxPrice:          1000000.0,
-				PricePrecision:    2,
-				QuantityPrecision: 6,
-			},
-			{
-				Name:              "ETHUSDT",
-				BaseAsset:         "ETH",
-				QuoteAsset:        "USDT",
-				Status:            "trading",
-				MinOrderSize:      0.01,
-				MaxOrderSize:      10000.0,
-				MinPrice:          0.01,
-				MaxPrice:          100000.0,
-				PricePrecision:    2,
-				QuantityPrecision: 4,
-			},
-		},
+		Name:    b.name,
+		Symbols: symbols,
 	}, nil
+}
+
+// calculatePrecision calculates decimal precision from step size
+func calculatePrecision(stepSize float64) int {
+	if stepSize >= 1 {
+		return 0
+	}
+
+	precision := 0
+	for stepSize < 1 {
+		stepSize *= 10
+		precision++
+	}
+
+	return precision
 }

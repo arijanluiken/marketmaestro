@@ -1,7 +1,8 @@
-# Mercantile Trading Bot - AI Agent Instructions
+# MarketMaestro Trading Bot - AI Agent Instructions
 
 ## Architecture Overview
 
+# MarketMaestro Trading Bot - AI Agent Instructions
 Mercantile is a **Hollywood actor framework-based** cryptocurrency trading bot. The entire system is built around message passing between actors, not traditional microservices.
 
 ### Core Actor Hierarchy

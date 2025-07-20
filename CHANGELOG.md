@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **14 New Technical Indicators**: Expanded the indicator library from 50+ to 65+ indicators
+  - **Relative Vigor Index (RVI)**: Momentum indicator comparing closing vs opening prices with signal line
+  - **Percentage Price Oscillator (PPO)**: MACD-like indicator using percentage values instead of price differences
+  - **Accumulation/Distribution Line (A/D)**: Volume flow indicator showing buying/selling pressure
+  - **Chaikin Money Flow (CMF)**: Volume-weighted indicator measuring accumulation/distribution over a period
+  - **Linear Regression**: Trend line calculation using least squares method
+  - **Linear Regression Slope**: Quantifies trend direction and strength
+  - **Correlation Coefficient**: Measures relationship between price and time for trend analysis
+  - **Bollinger %B**: Shows price position within Bollinger Bands (0-1 scale)
+  - **Bollinger Band Width**: Measures volatility by band width relative to middle line
+  - **Standard Error**: Statistical measure of linear regression reliability
+  - **Williams Accumulation/Distribution**: Volume indicator using true range calculations
+  - **Money Flow Volume**: Raw money flow calculation for each period
+  - **Price Rate of Change**: Momentum indicator showing percentage price changes
+  - **Volatility Index**: Custom volatility measure using return standard deviation
+
+- **Enhanced Strategy Documentation**: Added comprehensive examples and usage patterns for all new indicators
+- **Advanced Strategy Example**: Created `advanced_multi_indicator.star` demonstrating multi-indicator confirmation strategies
+- **Comprehensive Test Coverage**: Added 14 new test cases with integration testing for all new indicators
+
 ### Fixed
 - **Order Book Data Handling**: Improved processing of partial order books during low liquidity periods
   - Exchange actors now only warn for completely empty order books (0 bids AND 0 asks)

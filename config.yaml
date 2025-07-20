@@ -1,4 +1,4 @@
-# Mercantile Trading Bot Configuration
+# MarketMaestro Trading Bot Configuration
 
 database:
   path: "./marketmaestro.db"

@@ -11,7 +11,7 @@ ui:
   port: 8081
 
 logging:
-  level: "info"
+  level: "debug"
 
 # Exchange configurations
 exchanges:

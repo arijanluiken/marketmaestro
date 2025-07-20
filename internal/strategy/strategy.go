@@ -23,6 +23,11 @@ type (
 	ExecuteStrategyMsg struct{}
 	GetLogsMsg         struct{ Limit int }
 	LogsResponseMsg    struct{ Logs []StrategyLog }
+	// Message sent from strategy to exchange actor to register subscription preferences
+	StrategySubscriptionMsg struct {
+		Symbol   string
+		Interval string
+	}
 )
 
 // StrategyLog represents a log entry from strategy execution
@@ -43,6 +48,7 @@ type StrategyActor struct {
 	db           *database.DB
 	logger       zerolog.Logger
 	running      bool
+	initialized  bool   // Whether strategy has been initialized with historical data
 	interval     string // Interval from strategy script
 
 	// Strategy execution
@@ -54,6 +60,7 @@ type StrategyActor struct {
 	// Parent actor references
 	orderManagerPID *actor.PID
 	riskManagerPID  *actor.PID
+	exchangePID     *actor.PID // Reference to parent exchange actor
 
 	// Log storage (in-memory circular buffer)
 	logs    []StrategyLog
@@ -78,9 +85,10 @@ func New(strategyName, symbol, exchangeName string, strategyConfig map[string]in
 }
 
 // SetParentActors sets references to parent actors for communication
-func (s *StrategyActor) SetParentActors(orderManagerPID, riskManagerPID *actor.PID) {
+func (s *StrategyActor) SetParentActors(orderManagerPID, riskManagerPID, exchangePID *actor.PID) {
 	s.orderManagerPID = orderManagerPID
 	s.riskManagerPID = riskManagerPID
+	s.exchangePID = exchangePID
 }
 
 // Receive handles incoming messages
@@ -187,8 +195,7 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 		Str("interval", s.interval).
 		Msg("Strategy interval extracted from script")
 
-	s.running = true
-	s.addLog("info", fmt.Sprintf("Strategy %s started for %s", s.strategyName, s.symbol), map[string]interface{}{
+	s.addLog("info", fmt.Sprintf("Strategy %s initializing for %s", s.strategyName, s.symbol), map[string]interface{}{
 		"strategy": s.strategyName,
 		"symbol":   s.symbol,
 		"interval": s.interval,
@@ -210,8 +217,23 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 		}
 	}
 
-	// Start periodic strategy execution (every 30 seconds)
-	ctx.SendRepeat(ctx.PID(), ExecuteStrategyMsg{}, 30*time.Second)
+	// Register subscription with exchange actor for efficient routing
+	if s.exchangePID != nil {
+		ctx.Send(s.exchangePID, StrategySubscriptionMsg{
+			Symbol:   s.symbol,
+			Interval: s.interval,
+		})
+		s.logger.Debug().
+			Str("symbol", s.symbol).
+			Str("interval", s.interval).
+			Msg("Registered strategy subscription with exchange")
+	}
+
+	// Fetch historical klines to populate initial data before starting
+	s.fetchHistoricalKlines(ctx)
+
+	// Strategy will be marked as running and periodic execution will start
+	// after historical data is received (handled in onKlineData when we reach minimum buffer size)
 }
 
 func (s *StrategyActor) onStopStrategy(ctx *actor.Context) {
@@ -246,13 +268,9 @@ func (s *StrategyActor) onStopStrategy(ctx *actor.Context) {
 }
 
 func (s *StrategyActor) onKlineData(ctx *actor.Context, msg KlineDataMsg) {
-	if !s.running {
-		return
-	}
-
-	// Only process klines that match our strategy's interval
-	if msg.Kline.Interval != s.interval {
-		// Reduced chattiness - don't log interval mismatches
+	// Always process klines that match our strategy's symbol and interval
+	if msg.Kline.Symbol != s.symbol || msg.Kline.Interval != s.interval {
+		// Reduced chattiness - don't log mismatches
 		return
 	}
 
@@ -279,7 +297,38 @@ func (s *StrategyActor) onKlineData(ctx *actor.Context, msg KlineDataMsg) {
 		Str("interval", msg.Kline.Interval).
 		Time("timestamp", msg.Kline.Timestamp).
 		Float64("close", msg.Kline.Close).
+		Int("buffer_size", len(s.klineBuffer)).
+		Bool("running", s.running).
+		Bool("initialized", s.initialized).
 		Msg("Processing kline data for strategy")
+
+	// If this is the first time we have sufficient historical data, start the strategy
+	if !s.initialized && len(s.klineBuffer) >= 10 { // Require at least 10 klines before starting
+		s.initialized = true
+		s.running = true
+
+		s.logger.Info().
+			Str("strategy", s.strategyName).
+			Str("symbol", s.symbol).
+			Str("interval", s.interval).
+			Int("historical_klines", len(s.klineBuffer)).
+			Msg("Strategy initialized with historical data and started")
+
+		s.addLog("info", fmt.Sprintf("Strategy %s started with %d historical klines for %s %s", s.strategyName, len(s.klineBuffer), s.symbol, s.interval), map[string]interface{}{
+			"strategy":         s.strategyName,
+			"symbol":           s.symbol,
+			"interval":         s.interval,
+			"historical_count": len(s.klineBuffer),
+		})
+
+		// Start periodic strategy execution (every 30 seconds)
+		ctx.SendRepeat(ctx.PID(), ExecuteStrategyMsg{}, 30*time.Second)
+	}
+
+	// Only process real-time klines for trading signals if strategy is fully running
+	if !s.running {
+		return
+	}
 
 	// Send price update to order manager
 	if s.orderManagerPID != nil {
@@ -292,7 +341,7 @@ func (s *StrategyActor) onKlineData(ctx *actor.Context, msg KlineDataMsg) {
 	}
 
 	// Trigger strategy execution with kline callback if we have enough data
-	if len(s.klineBuffer) >= 26 {
+	if len(s.klineBuffer) >= 1 {
 		s.executeKlineCallback(ctx, msg.Kline)
 	}
 }
@@ -304,6 +353,16 @@ func (s *StrategyActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg
 
 	s.orderBook = msg.OrderBook
 
+	// Check if order book has valid bids and asks before accessing
+	if len(msg.OrderBook.Bids) == 0 || len(msg.OrderBook.Asks) == 0 {
+		s.logger.Debug().
+			Str("symbol", msg.OrderBook.Symbol).
+			Int("bids", len(msg.OrderBook.Bids)).
+			Int("asks", len(msg.OrderBook.Asks)).
+			Msg("Received empty order book, skipping")
+		return
+	}
+
 	s.logger.Debug().
 		Str("symbol", msg.OrderBook.Symbol).
 		Float64("bid", msg.OrderBook.Bids[0].Price).
@@ -311,7 +370,7 @@ func (s *StrategyActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg
 		Msg("Received order book data")
 
 	// Send price update to order manager for stop/trailing orders
-	if s.orderManagerPID != nil && len(msg.OrderBook.Bids) > 0 {
+	if s.orderManagerPID != nil {
 		midPrice := (msg.OrderBook.Bids[0].Price + msg.OrderBook.Asks[0].Price) / 2
 		priceUpdate := map[string]interface{}{
 			"type":   "price_update",
@@ -322,7 +381,7 @@ func (s *StrategyActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg
 	}
 
 	// Execute strategy with orderbook callback if we have enough data
-	if len(s.klineBuffer) >= 26 {
+	if len(s.klineBuffer) >= 1 {
 		s.executeOrderBookCallback(ctx, msg.OrderBook)
 	}
 }
@@ -349,13 +408,13 @@ func (s *StrategyActor) onTickerData(ctx *actor.Context, msg TickerDataMsg) {
 	}
 
 	// Execute strategy with ticker callback if we have enough data
-	if len(s.klineBuffer) >= 26 {
+	if len(s.klineBuffer) >= 1 {
 		s.executeTickerCallback(ctx, msg.Ticker)
 	}
 }
 
 func (s *StrategyActor) onExecuteStrategy(ctx *actor.Context) {
-	if !s.running || len(s.klineBuffer) < 26 {
+	if !s.running || len(s.klineBuffer) < 1 {
 		return
 	}
 
@@ -624,4 +683,35 @@ func (s *StrategyActor) addLog(level, message string, context map[string]interfa
 		// Keep the most recent maxLogs entries
 		s.logs = s.logs[len(s.logs)-s.maxLogs:]
 	}
+}
+
+// fetchHistoricalKlines fetches historical kline data from the exchange to populate initial strategy data
+func (s *StrategyActor) fetchHistoricalKlines(ctx *actor.Context) {
+	if s.exchangePID == nil {
+		s.logger.Warn().Msg("No exchange actor reference, skipping historical klines fetch")
+		return
+	}
+
+	// Import the message type from exchange package - we need to use a map to avoid import cycle
+	fetchMsg := map[string]interface{}{
+		"type":     "fetch_historical_klines",
+		"symbol":   s.symbol,
+		"interval": s.interval,
+		"limit":    100,
+	}
+
+	// Request last 100 klines for this symbol/interval
+	ctx.Send(s.exchangePID, fetchMsg)
+
+	s.logger.Debug().
+		Str("symbol", s.symbol).
+		Str("interval", s.interval).
+		Int("limit", 100).
+		Msg("Requested historical klines from exchange")
+
+	s.addLog("info", fmt.Sprintf("Fetching historical data for %s %s", s.symbol, s.interval), map[string]interface{}{
+		"symbol":   s.symbol,
+		"interval": s.interval,
+		"limit":    100,
+	})
 }

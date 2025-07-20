@@ -351,7 +351,7 @@ func (se *StrategyEngine) prepareGlobals(ctx *StrategyContext) starlark.StringDi
 	}
 
 	// Add order book data
-	if ctx.OrderBook != nil {
+	if ctx.OrderBook != nil && len(ctx.OrderBook.Bids) > 0 && len(ctx.OrderBook.Asks) > 0 {
 		globals["bid"] = starlark.Float(ctx.OrderBook.Bids[0].Price)
 		globals["ask"] = starlark.Float(ctx.OrderBook.Asks[0].Price)
 		globals["spread"] = starlark.Float(ctx.OrderBook.Asks[0].Price - ctx.OrderBook.Bids[0].Price)
@@ -402,8 +402,8 @@ func (se *StrategyEngine) extractSignal(result starlark.StringDict) (*StrategySi
 
 // ExecuteKlineCallback runs the on_kline callback in a strategy script
 func (se *StrategyEngine) ExecuteKlineCallback(strategyName string, ctx *StrategyContext, kline *exchanges.Kline) (*StrategySignal, error) {
-	// Load strategy script
-	script, err := se.loadStrategy(strategyName)
+	// Get cached strategy globals
+	_, globals, err := se.getOrLoadStrategy(strategyName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
 	}
@@ -413,8 +413,8 @@ func (se *StrategyEngine) ExecuteKlineCallback(strategyName string, ctx *Strateg
 		Name: fmt.Sprintf("strategy-%s-kline", strategyName),
 	}
 
-	// Prepare globals with context data
-	globals := se.prepareGlobals(ctx)
+	// Update globals with current context data
+	se.updateGlobalsWithContext(globals, ctx)
 
 	// Add kline object - create a proper object with attribute access
 	klineObj := &KlineObject{
@@ -428,14 +428,8 @@ func (se *StrategyEngine) ExecuteKlineCallback(strategyName string, ctx *Strateg
 	}
 	globals["kline"] = klineObj
 
-	// Execute strategy
-	result, err := starlark.ExecFile(thread, strategyName, script, globals)
-	if err != nil {
-		return nil, fmt.Errorf("strategy execution failed: %w", err)
-	}
-
 	// Check if on_kline function exists and call it
-	if onKlineFn, ok := result["on_kline"]; ok {
+	if onKlineFn, ok := globals["on_kline"]; ok {
 		if fn, ok := onKlineFn.(*starlark.Function); ok {
 			args := starlark.Tuple{globals["kline"]}
 			signalResult, err := starlark.Call(thread, fn, args, nil)
@@ -451,13 +445,33 @@ func (se *StrategyEngine) ExecuteKlineCallback(strategyName string, ctx *Strateg
 	}
 
 	// Fallback to legacy execution if no callback
-	return se.extractSignal(result)
+	return se.extractSignal(globals)
+}
+
+// updateGlobalsWithContext updates the cached globals with current context data
+func (se *StrategyEngine) updateGlobalsWithContext(globals starlark.StringDict, ctx *StrategyContext) {
+	// Add context data
+	globals["symbol"] = starlark.String(ctx.Symbol)
+	globals["exchange"] = starlark.String(ctx.Exchange)
+	globals["config"] = se.mapToStarlark(ctx.Config)
+
+	// Add kline data
+	if len(ctx.Klines) > 0 {
+		globals["klines"] = se.klinesToStarlark(ctx.Klines)
+	}
+
+	// Add order book data
+	if ctx.OrderBook != nil && len(ctx.OrderBook.Bids) > 0 && len(ctx.OrderBook.Asks) > 0 {
+		globals["bid"] = starlark.Float(ctx.OrderBook.Bids[0].Price)
+		globals["ask"] = starlark.Float(ctx.OrderBook.Asks[0].Price)
+		globals["spread"] = starlark.Float(ctx.OrderBook.Asks[0].Price - ctx.OrderBook.Bids[0].Price)
+	}
 }
 
 // ExecuteOrderBookCallback runs the on_orderbook callback in a strategy script
 func (se *StrategyEngine) ExecuteOrderBookCallback(strategyName string, ctx *StrategyContext, orderBook *exchanges.OrderBook) (*StrategySignal, error) {
-	// Load strategy script
-	script, err := se.loadStrategy(strategyName)
+	// Get cached strategy globals
+	_, globals, err := se.getOrLoadStrategy(strategyName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
 	}
@@ -467,8 +481,8 @@ func (se *StrategyEngine) ExecuteOrderBookCallback(strategyName string, ctx *Str
 		Name: fmt.Sprintf("strategy-%s-orderbook", strategyName),
 	}
 
-	// Prepare globals with context data
-	globals := se.prepareGlobals(ctx)
+	// Update globals with current context data
+	se.updateGlobalsWithContext(globals, ctx)
 
 	// Add orderbook object
 	orderBookDict := starlark.NewDict(4)
@@ -496,14 +510,8 @@ func (se *StrategyEngine) ExecuteOrderBookCallback(strategyName string, ctx *Str
 	orderBookDict.SetKey(starlark.String("asks"), asks)
 	globals["orderbook"] = orderBookDict
 
-	// Execute strategy
-	result, err := starlark.ExecFile(thread, strategyName, script, globals)
-	if err != nil {
-		return nil, fmt.Errorf("strategy execution failed: %w", err)
-	}
-
 	// Check if on_orderbook function exists and call it
-	if onOrderBookFn, ok := result["on_orderbook"]; ok {
+	if onOrderBookFn, ok := globals["on_orderbook"]; ok {
 		if fn, ok := onOrderBookFn.(*starlark.Function); ok {
 			args := starlark.Tuple{globals["orderbook"]}
 			signalResult, err := starlark.Call(thread, fn, args, nil)
@@ -519,13 +527,13 @@ func (se *StrategyEngine) ExecuteOrderBookCallback(strategyName string, ctx *Str
 	}
 
 	// Fallback to legacy execution if no callback
-	return se.extractSignal(result)
+	return se.extractSignal(globals)
 }
 
 // ExecuteTickerCallback runs the on_ticker callback in a strategy script
 func (se *StrategyEngine) ExecuteTickerCallback(strategyName string, ctx *StrategyContext, ticker *exchanges.Ticker) (*StrategySignal, error) {
-	// Load strategy script
-	script, err := se.loadStrategy(strategyName)
+	// Get cached strategy globals
+	_, globals, err := se.getOrLoadStrategy(strategyName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
 	}
@@ -535,8 +543,8 @@ func (se *StrategyEngine) ExecuteTickerCallback(strategyName string, ctx *Strate
 		Name: fmt.Sprintf("strategy-%s-ticker", strategyName),
 	}
 
-	// Prepare globals with context data
-	globals := se.prepareGlobals(ctx)
+	// Update globals with current context data
+	se.updateGlobalsWithContext(globals, ctx)
 
 	// Add ticker object
 	tickerDict := starlark.NewDict(4)
@@ -546,14 +554,8 @@ func (se *StrategyEngine) ExecuteTickerCallback(strategyName string, ctx *Strate
 	tickerDict.SetKey(starlark.String("timestamp"), starlark.String(ticker.Timestamp.Format("2006-01-02T15:04:05Z")))
 	globals["ticker"] = tickerDict
 
-	// Execute strategy
-	result, err := starlark.ExecFile(thread, strategyName, script, globals)
-	if err != nil {
-		return nil, fmt.Errorf("strategy execution failed: %w", err)
-	}
-
 	// Check if on_ticker function exists and call it
-	if onTickerFn, ok := result["on_ticker"]; ok {
+	if onTickerFn, ok := globals["on_ticker"]; ok {
 		if fn, ok := onTickerFn.(*starlark.Function); ok {
 			args := starlark.Tuple{globals["ticker"]}
 			signalResult, err := starlark.Call(thread, fn, args, nil)
@@ -569,13 +571,13 @@ func (se *StrategyEngine) ExecuteTickerCallback(strategyName string, ctx *Strate
 	}
 
 	// Fallback to legacy execution if no callback
-	return se.extractSignal(result)
+	return se.extractSignal(globals)
 }
 
 // ExecuteStartCallback runs the on_start callback in a strategy script
 func (se *StrategyEngine) ExecuteStartCallback(strategyName string, ctx *StrategyContext) error {
-	// Load strategy script
-	script, err := se.loadStrategy(strategyName)
+	// Get cached strategy globals
+	_, globals, err := se.getOrLoadStrategy(strategyName)
 	if err != nil {
 		return fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
 	}
@@ -585,17 +587,11 @@ func (se *StrategyEngine) ExecuteStartCallback(strategyName string, ctx *Strateg
 		Name: fmt.Sprintf("strategy-%s-start", strategyName),
 	}
 
-	// Prepare globals with context data
-	globals := se.prepareGlobals(ctx)
-
-	// Execute strategy
-	result, err := starlark.ExecFile(thread, strategyName, script, globals)
-	if err != nil {
-		return fmt.Errorf("strategy execution failed: %w", err)
-	}
+	// Update globals with current context data
+	se.updateGlobalsWithContext(globals, ctx)
 
 	// Check if on_start function exists and call it
-	if onStartFn, ok := result["on_start"]; ok {
+	if onStartFn, ok := globals["on_start"]; ok {
 		if fn, ok := onStartFn.(*starlark.Function); ok {
 			_, err := starlark.Call(thread, fn, starlark.Tuple{}, nil)
 			if err != nil {
@@ -610,8 +606,8 @@ func (se *StrategyEngine) ExecuteStartCallback(strategyName string, ctx *Strateg
 
 // ExecuteStopCallback runs the on_stop callback in a strategy script
 func (se *StrategyEngine) ExecuteStopCallback(strategyName string, ctx *StrategyContext) error {
-	// Load strategy script
-	script, err := se.loadStrategy(strategyName)
+	// Get cached strategy globals
+	_, globals, err := se.getOrLoadStrategy(strategyName)
 	if err != nil {
 		return fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
 	}
@@ -621,17 +617,11 @@ func (se *StrategyEngine) ExecuteStopCallback(strategyName string, ctx *Strategy
 		Name: fmt.Sprintf("strategy-%s-stop", strategyName),
 	}
 
-	// Prepare globals with context data
-	globals := se.prepareGlobals(ctx)
-
-	// Execute strategy
-	result, err := starlark.ExecFile(thread, strategyName, script, globals)
-	if err != nil {
-		return fmt.Errorf("strategy execution failed: %w", err)
-	}
+	// Update globals with current context data
+	se.updateGlobalsWithContext(globals, ctx)
 
 	// Check if on_stop function exists and call it
-	if onStopFn, ok := result["on_stop"]; ok {
+	if onStopFn, ok := globals["on_stop"]; ok {
 		if fn, ok := onStopFn.(*starlark.Function); ok {
 			_, err := starlark.Call(thread, fn, starlark.Tuple{}, nil)
 			if err != nil {

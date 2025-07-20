@@ -213,7 +213,7 @@ func (b *BybitExchange) handleKlineMessage(wsMsg BybitWSMessage, handler DataHan
 		volume, _ := strconv.ParseFloat(k.Volume, 64)
 
 		kline := &Kline{
-			Symbol:    k.Symbol,
+			Symbol:    b.extractSymbolFromTopic(wsMsg.Topic),
 			Open:      open,
 			High:      high,
 			Low:       low,
@@ -273,6 +273,16 @@ func (b *BybitExchange) extractIntervalFromTopic(topic string) string {
 		return b.reverseMapInterval(parts[1])
 	}
 	return "1m"
+}
+
+// extractSymbolFromTopic extracts symbol from WebSocket topic
+func (b *BybitExchange) extractSymbolFromTopic(topic string) string {
+	// Extract symbol from topic like "kline.1.BTCUSDT"
+	parts := strings.Split(topic, ".")
+	if len(parts) >= 3 {
+		return parts[2]
+	}
+	return ""
 }
 
 // Disconnect closes connection to the exchange
@@ -501,12 +511,32 @@ func (b *BybitExchange) PlaceOrder(ctx context.Context, order *Order) (*Order, e
 	if order.Type == "limit" {
 		priceStr := fmt.Sprintf("%.8f", order.Price)
 		param.Price = &priceStr
+	} else if order.Type == "market" {
+		// For market orders, we may need to specify market unit
+		// Let's use baseCoin (default) - order by base currency quantity
+		marketUnit := bybit.MarketUnitBaseCoin
+		param.MarketUnit = &marketUnit
 	}
+
+	// Log the exact parameters being sent to Bybit
+	b.logger.Info().
+		Str("category", string(param.Category)).
+		Str("symbol", string(param.Symbol)).
+		Str("side", string(param.Side)).
+		Str("orderType", string(param.OrderType)).
+		Str("qty", param.Qty).
+		Interface("price", param.Price).
+		Interface("marketUnit", param.MarketUnit).
+		Msg("Sending order parameters to Bybit API")
 
 	// Use the V5 Order service to place the order
 	response, err := b.client.V5().Order().CreateOrder(param)
 	if err != nil {
-		b.logger.Error().Err(err).Msg("Failed to place order")
+		b.logger.Error().Err(err).
+			Str("category", string(param.Category)).
+			Str("symbol", string(param.Symbol)).
+			Str("qty", param.Qty).
+			Msg("Failed to place order with detailed parameters")
 		return nil, fmt.Errorf("failed to place order: %w", err)
 	}
 

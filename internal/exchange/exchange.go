@@ -48,6 +48,15 @@ type (
 		APIActorPID *actor.PID
 	}
 
+	// Strategy management messages
+	FetchHistoricalKlinesMsg struct {
+		Symbol   string
+		Interval string
+		Limit    int
+	}
+)
+
+type (
 	// Strategy data message that can be sent to API
 	StrategyDataUpdateMsg struct {
 		Exchange   string
@@ -104,6 +113,9 @@ type ExchangeActor struct {
 	subscribedKlines     map[string]bool
 	subscribedOrderBooks map[string]bool
 
+	// Strategy subscriptions: map[symbol:interval] -> []strategyPID for efficient routing
+	strategySubscriptions map[string][]*actor.PID
+
 	// Store actor system for sending messages from callbacks
 	actorSystem *actor.Engine
 }
@@ -113,14 +125,15 @@ func New(exchangeName string, exchangeConfig map[string]interface{}, cfg *config
 	factory := exchanges.NewFactory(logger)
 
 	return &ExchangeActor{
-		exchangeName:         exchangeName,
-		config:               cfg,
-		db:                   db,
-		logger:               logger,
-		factory:              factory,
-		strategyActors:       make(map[string]*actor.PID),
-		subscribedKlines:     make(map[string]bool),
-		subscribedOrderBooks: make(map[string]bool),
+		exchangeName:          exchangeName,
+		config:                cfg,
+		db:                    db,
+		logger:                logger,
+		factory:               factory,
+		strategyActors:        make(map[string]*actor.PID),
+		subscribedKlines:      make(map[string]bool),
+		subscribedOrderBooks:  make(map[string]bool),
+		strategySubscriptions: make(map[string][]*actor.PID),
 	}
 }
 
@@ -162,6 +175,10 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onPortfolioRequestPositions(ctx)
 	case SetAPIActorMsg:
 		e.onSetAPIActor(ctx, msg)
+	case strategy.StrategySubscriptionMsg:
+		e.onStrategySubscription(ctx, msg)
+	case FetchHistoricalKlinesMsg:
+		e.onFetchHistoricalKlines(ctx, msg)
 	case map[string]interface{}:
 		e.onGenericMessage(ctx, msg)
 	default:
@@ -442,11 +459,28 @@ func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
 		Time("timestamp", kline.Timestamp).
 		Msg("Received kline data")
 
-	// Broadcast to all strategy actors using the actor system
-	for _, strategyPID := range e.strategyActors {
-		if strategyPID != nil && e.actorSystem != nil {
-			e.actorSystem.Send(strategyPID, strategy.KlineDataMsg{Kline: kline})
+	// Send klines only to strategies that have subscribed to this symbol:interval combination
+	subscriptionKey := fmt.Sprintf("%s:%s", kline.Symbol, kline.Interval)
+	subscribers := e.strategySubscriptions[subscriptionKey]
+
+	if len(subscribers) > 0 {
+		e.logger.Debug().
+			Str("symbol", kline.Symbol).
+			Str("interval", kline.Interval).
+			Int("subscribers", len(subscribers)).
+			Msg("Routing kline to subscribed strategies")
+
+		for _, strategyPID := range subscribers {
+			if strategyPID != nil && e.actorSystem != nil {
+				e.actorSystem.Send(strategyPID, strategy.KlineDataMsg{Kline: kline})
+			}
 		}
+	} else {
+		// Log when no strategies are interested in this kline data
+		e.logger.Debug().
+			Str("symbol", kline.Symbol).
+			Str("interval", kline.Interval).
+			Msg("No strategies subscribed to this symbol:interval, skipping")
 	}
 
 	// Update portfolio with current market prices
@@ -770,11 +804,15 @@ func (e *ExchangeActor) StartStrategy(ctx *actor.Context, strategyName, symbol s
 			e.logger.With().Str("actor", "strategy").Str("strategy", strategyName).Str("symbol", symbol).Logger(),
 		)
 		// Set parent actor references for communication
-		strategyActor.SetParentActors(e.orderManagerPID, e.riskManagerPID)
+		strategyActor.SetParentActors(e.orderManagerPID, e.riskManagerPID, ctx.PID())
 		return strategyActor
 	}, strategyKey)
 
 	e.strategyActors[strategyKey] = strategyPID
+
+	// Send start message to the strategy actor to trigger initialization
+	ctx.Send(strategyPID, strategy.StartStrategyMsg{})
+
 	e.logger.Info().
 		Str("strategy", strategyName).
 		Str("symbol", symbol).
@@ -933,6 +971,8 @@ func (e *ExchangeActor) onGenericMessage(ctx *actor.Context, msg map[string]inte
 	}
 
 	switch msgType {
+	case "fetch_historical_klines":
+		e.handleFetchHistoricalKlines(ctx, msg)
 	case "get_risk_parameter":
 		e.handleGetRiskParameter(ctx, msg)
 	case "set_risk_parameter":
@@ -976,6 +1016,35 @@ func (e *ExchangeActor) handleGetRiskParameter(ctx *actor.Context, msg map[strin
 	}
 
 	ctx.Respond(response)
+}
+
+func (e *ExchangeActor) handleFetchHistoricalKlines(ctx *actor.Context, msg map[string]interface{}) {
+	symbol, ok := msg["symbol"].(string)
+	if !ok {
+		e.logger.Warn().Interface("message", msg).Msg("Missing symbol in fetch historical klines request")
+		return
+	}
+
+	interval, ok := msg["interval"].(string)
+	if !ok {
+		e.logger.Warn().Interface("message", msg).Msg("Missing interval in fetch historical klines request")
+		return
+	}
+
+	limit, ok := msg["limit"].(int)
+	if !ok {
+		// Default to 100 if not specified
+		limit = 100
+	}
+
+	// Convert to the proper message type and handle it
+	fetchMsg := FetchHistoricalKlinesMsg{
+		Symbol:   symbol,
+		Interval: interval,
+		Limit:    limit,
+	}
+
+	e.onFetchHistoricalKlines(ctx, fetchMsg)
 }
 
 func (e *ExchangeActor) handleSetRiskParameter(ctx *actor.Context, msg map[string]interface{}) {
@@ -1152,4 +1221,89 @@ func (e *ExchangeActor) handleLoadRebalanceScript(ctx *actor.Context, msg map[st
 	}
 
 	ctx.Respond(response)
+}
+
+// onStrategySubscription handles strategy subscription registration for efficient routing
+func (e *ExchangeActor) onStrategySubscription(ctx *actor.Context, msg strategy.StrategySubscriptionMsg) {
+	subscriptionKey := fmt.Sprintf("%s:%s", msg.Symbol, msg.Interval)
+
+	// Add the strategy PID to the subscription list for this symbol:interval
+	if e.strategySubscriptions[subscriptionKey] == nil {
+		e.strategySubscriptions[subscriptionKey] = make([]*actor.PID, 0)
+	}
+
+	// Check if strategy PID is already subscribed to avoid duplicates
+	strategyPID := ctx.Sender()
+	for _, existingPID := range e.strategySubscriptions[subscriptionKey] {
+		if existingPID == strategyPID {
+			e.logger.Debug().
+				Str("symbol", msg.Symbol).
+				Str("interval", msg.Interval).
+				Msg("Strategy already subscribed to this symbol:interval")
+			return
+		}
+	}
+
+	e.strategySubscriptions[subscriptionKey] = append(e.strategySubscriptions[subscriptionKey], strategyPID)
+
+	e.logger.Info().
+		Str("symbol", msg.Symbol).
+		Str("interval", msg.Interval).
+		Int("total_subscribers", len(e.strategySubscriptions[subscriptionKey])).
+		Msg("Strategy subscribed to symbol:interval")
+}
+
+// onFetchHistoricalKlines handles historical klines requests from strategies
+func (e *ExchangeActor) onFetchHistoricalKlines(ctx *actor.Context, msg FetchHistoricalKlinesMsg) {
+	if e.exchange == nil {
+		e.logger.Error().Msg("Exchange not connected, cannot fetch historical klines")
+		return
+	}
+
+	e.logger.Info().
+		Str("symbol", msg.Symbol).
+		Str("interval", msg.Interval).
+		Int("limit", msg.Limit).
+		Msg("Fetching historical klines")
+
+	// Use the GetKlines method we know exists
+	klines, err := e.exchange.GetKlines(context.Background(), msg.Symbol, msg.Interval, msg.Limit)
+	if err != nil {
+		e.logger.Error().Err(err).
+			Str("symbol", msg.Symbol).
+			Str("interval", msg.Interval).
+			Msg("Failed to fetch historical klines")
+		return
+	}
+
+	e.logger.Info().
+		Str("symbol", msg.Symbol).
+		Str("interval", msg.Interval).
+		Int("klines_count", len(klines)).
+		Msg("Successfully fetched historical klines")
+
+	// Send each historical kline to the requesting strategy
+	strategyPID := ctx.Sender()
+	for _, kline := range klines {
+		if e.actorSystem != nil {
+			e.actorSystem.Send(strategyPID, strategy.KlineDataMsg{Kline: kline})
+		}
+	}
+}
+
+// removeStrategyFromSubscriptions removes a strategy from all subscription lists (useful for cleanup)
+func (e *ExchangeActor) removeStrategyFromSubscriptions(strategyPID *actor.PID) {
+	for subscriptionKey, subscribers := range e.strategySubscriptions {
+		// Remove the strategy PID from this subscription
+		for i, pid := range subscribers {
+			if pid == strategyPID {
+				// Remove element at index i
+				e.strategySubscriptions[subscriptionKey] = append(subscribers[:i], subscribers[i+1:]...)
+				e.logger.Debug().
+					Str("subscription", subscriptionKey).
+					Msg("Removed strategy from subscription")
+				break
+			}
+		}
+	}
 }

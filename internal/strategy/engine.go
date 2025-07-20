@@ -21,6 +21,7 @@ type StrategyEngine struct {
 	indicators    *TechnicalIndicators
 	builtin       starlark.StringDict
 	scriptCache   map[string]*starlark.Program
+	globalsCache  map[string]starlark.StringDict // Cache compiled globals for each strategy
 	strategyActor interface {
 		addLog(level, message string, context map[string]interface{})
 	} // Interface to avoid circular import
@@ -62,9 +63,10 @@ func NewStrategyEngine(logger zerolog.Logger) *StrategyEngine {
 	indicators := &TechnicalIndicators{logger: logger}
 
 	engine := &StrategyEngine{
-		logger:      logger,
-		indicators:  indicators,
-		scriptCache: make(map[string]*starlark.Program),
+		logger:       logger,
+		indicators:   indicators,
+		scriptCache:  make(map[string]*starlark.Program),
+		globalsCache: make(map[string]starlark.StringDict),
 	}
 
 	engine.setupBuiltins()
@@ -164,4 +166,57 @@ func (se *StrategyEngine) ValidateCallbacks(strategyName string) (*StrategyCallb
 		Msg("Strategy callbacks validated")
 
 	return callbacks, nil
+}
+
+// getOrLoadStrategy loads a strategy script and caches the compiled program and globals
+func (se *StrategyEngine) getOrLoadStrategy(strategyName string) (*starlark.Program, starlark.StringDict, error) {
+	// Check if already cached
+	if program, exists := se.scriptCache[strategyName]; exists {
+		if globals, globalsExist := se.globalsCache[strategyName]; globalsExist {
+			// Return a copy of globals to avoid mutation issues
+			globalsCopy := make(starlark.StringDict)
+			for k, v := range globals {
+				globalsCopy[k] = v
+			}
+			return program, globalsCopy, nil
+		}
+	}
+
+	// Load the script using existing method
+	script, err := se.loadStrategy(strategyName)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to load strategy %s: %w", strategyName, err)
+	}
+
+	// Create thread for compilation
+	thread := &starlark.Thread{
+		Name: fmt.Sprintf("strategy-%s-init", strategyName),
+	}
+
+	// Prepare basic globals for initial execution
+	globals := make(starlark.StringDict)
+	for k, v := range se.builtin {
+		globals[k] = v
+	}
+
+	// Execute the script to get function definitions and initial state
+	globals, err = starlark.ExecFile(thread, strategyName+".star", script, globals)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to execute strategy %s: %w", strategyName, err)
+	}
+
+	// Cache the initial globals
+	se.globalsCache[strategyName] = globals
+
+	se.logger.Debug().
+		Str("strategy", strategyName).
+		Msg("Strategy script loaded and cached")
+
+	// Return a copy of globals to avoid mutation issues
+	globalsCopy := make(starlark.StringDict)
+	for k, v := range globals {
+		globalsCopy[k] = v
+	}
+
+	return nil, globalsCopy, nil
 }

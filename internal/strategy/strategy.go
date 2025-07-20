@@ -99,7 +99,7 @@ func (s *StrategyActor) Receive(ctx *actor.Context) {
 }
 
 func (s *StrategyActor) onStarted(ctx *actor.Context) {
-	s.logger.Info().
+	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Msg("Strategy actor started")
@@ -116,14 +116,14 @@ func (s *StrategyActor) onInitialized(ctx *actor.Context) {
 }
 
 func (s *StrategyActor) onStopped(ctx *actor.Context) {
-	s.logger.Info().
+	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Msg("Strategy actor stopped")
 }
 
 func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
-	s.logger.Info().
+	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Msg("Starting strategy execution")
@@ -141,7 +141,7 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 	}
 	s.callbacks = callbacks
 
-	s.logger.Info().
+	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Bool("has_on_kline", callbacks.HasOnKline).
 		Bool("has_on_orderbook", callbacks.HasOnOrderBook).
@@ -158,7 +158,7 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 	}
 	s.interval = interval
 
-	s.logger.Info().
+	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Str("interval", s.interval).
@@ -187,7 +187,7 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 }
 
 func (s *StrategyActor) onStopStrategy(ctx *actor.Context) {
-	s.logger.Info().
+	s.logger.Debug().
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Msg("Stopping strategy execution")

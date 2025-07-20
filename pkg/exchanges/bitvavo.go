@@ -36,16 +36,16 @@ func (b *BitvavoExchange) GetName() string {
 
 // Connect establishes connection to the exchange
 func (b *BitvavoExchange) Connect(ctx context.Context) error {
-	b.logger.Info().Bool("testnet", b.testnet).Msg("Connecting to Bitvavo")
+	b.logger.Debug().Bool("testnet", b.testnet).Msg("Connecting to Bitvavo")
 	
 	// For now, just return success - real implementation would test connection
-	b.logger.Info().Msg("Successfully connected to Bitvavo")
+	b.logger.Debug().Msg("Successfully connected to Bitvavo")
 	return nil
 }
 
 // Disconnect closes connection to the exchange
 func (b *BitvavoExchange) Disconnect() error {
-	b.logger.Info().Msg("Disconnecting from Bitvavo")
+	b.logger.Debug().Msg("Disconnecting from Bitvavo")
 	return nil
 }
 

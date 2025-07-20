@@ -57,6 +57,13 @@ func (s *Supervisor) Start(ctx context.Context) error {
 	}
 	s.config = cfg
 
+	// Set global log level based on configuration
+	level, err := zerolog.ParseLevel(cfg.Logging.Level)
+	if err != nil {
+		level = zerolog.InfoLevel // Default to info level
+	}
+	zerolog.SetGlobalLevel(level)
+
 	// Initialize database
 	db, err := database.New(cfg.Database.Path)
 	if err != nil {
@@ -112,11 +119,11 @@ func (s *Supervisor) Receive(ctx *actor.Context) {
 }
 
 func (s *Supervisor) onStarted(ctx *actor.Context) {
-	s.logger.Info().Msg("Supervisor actor started")
+	s.logger.Debug().Msg("Supervisor actor started")
 }
 
 func (s *Supervisor) onStopped(ctx *actor.Context) {
-	s.logger.Info().Msg("Supervisor actor stopped")
+	s.logger.Debug().Msg("Supervisor actor stopped")
 	if s.db != nil {
 		s.db.Close()
 	}
@@ -127,7 +134,7 @@ func (s *Supervisor) onInitialized(ctx *actor.Context) {
 }
 
 func (s *Supervisor) onStart(ctx *actor.Context) {
-	s.logger.Info().Msg("Starting child actors")
+	s.logger.Debug().Msg("Starting child actors")
 
 	// Start API actor
 	apiActorPID := ctx.SpawnChild(func() actor.Receiver {
@@ -173,11 +180,11 @@ func (s *Supervisor) onStart(ctx *actor.Context) {
 }
 
 func (s *Supervisor) onStop(ctx *actor.Context) {
-	s.logger.Info().Msg("Stopping child actors")
+	s.logger.Debug().Msg("Stopping child actors")
 
 	// Stop all exchange actors
 	for name, pid := range s.exchangeActors {
-		s.logger.Info().Str("exchange", name).Msg("Stopping exchange actor")
+		s.logger.Debug().Str("exchange", name).Msg("Stopping exchange actor")
 		ctx.Engine().Stop(pid)
 	}
 
@@ -213,7 +220,7 @@ func (s *Supervisor) onRegisterExchange(ctx *actor.Context, msg RegisterExchange
 }
 
 func (s *Supervisor) startExchangeActor(ctx *actor.Context, exchangeName string, config map[string]interface{}) {
-	s.logger.Info().Str("exchange", exchangeName).Msg("Starting exchange actor")
+	s.logger.Debug().Str("exchange", exchangeName).Msg("Starting exchange actor")
 
 	exchangeActorPID := ctx.SpawnChild(func() actor.Receiver {
 		return exchange.New(
@@ -226,7 +233,7 @@ func (s *Supervisor) startExchangeActor(ctx *actor.Context, exchangeName string,
 	}, "exchange_"+exchangeName)
 
 	s.exchangeActors[exchangeName] = exchangeActorPID
-	s.logger.Info().Str("exchange", exchangeName).Msg("Exchange actor started successfully")
+	s.logger.Debug().Str("exchange", exchangeName).Msg("Exchange actor started successfully")
 
 	// Notify API actor about the new exchange actor
 	if s.apiActor != nil {
@@ -243,7 +250,7 @@ func (s *Supervisor) startExchangeActor(ctx *actor.Context, exchangeName string,
 }
 
 func (s *Supervisor) onPortfolioActorCreated(ctx *actor.Context, msg exchange.PortfolioActorCreatedMsg) {
-	s.logger.Info().
+	s.logger.Debug().
 		Str("exchange", msg.Exchange).
 		Msg("Portfolio actor created, notifying API actor")
 

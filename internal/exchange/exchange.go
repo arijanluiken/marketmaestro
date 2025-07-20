@@ -505,16 +505,25 @@ func (e *ExchangeActor) OnKline(kline *exchanges.Kline) {
 }
 
 func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
-	// Reduced logging to only error cases
-	if len(orderBook.Bids) == 0 || len(orderBook.Asks) == 0 {
+	// Only warn for completely empty order books (both sides missing)
+	if len(orderBook.Bids) == 0 && len(orderBook.Asks) == 0 {
 		e.logger.Warn().
+			Str("symbol", orderBook.Symbol).
+			Msg("Completely empty order book received")
+		return // Skip processing completely empty order books
+	}
+
+	// Debug log for partial order books (common during low liquidity)
+	if len(orderBook.Bids) == 0 || len(orderBook.Asks) == 0 {
+		e.logger.Debug().
 			Str("symbol", orderBook.Symbol).
 			Int("bids", len(orderBook.Bids)).
 			Int("asks", len(orderBook.Asks)).
-			Msg("Empty order book received")
+			Msg("Partial order book received (low liquidity)")
 	}
 
 	// Broadcast to strategy actors using the actor system
+	// Let strategies decide how to handle partial order book data
 	for _, strategyPID := range e.strategyActors {
 		if strategyPID != nil && e.actorSystem != nil {
 			e.actorSystem.Send(strategyPID, strategy.OrderBookDataMsg{OrderBook: orderBook})
@@ -522,15 +531,28 @@ func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
 	}
 
 	// Send price update to order manager for stop/trailing orders
-	if e.orderManagerPID != nil && e.actorSystem != nil && len(orderBook.Bids) > 0 && len(orderBook.Asks) > 0 {
-		// Use mid price for order management
-		midPrice := (orderBook.Bids[0].Price + orderBook.Asks[0].Price) / 2
-		priceUpdate := map[string]interface{}{
-			"type":   "price_update",
-			"symbol": orderBook.Symbol,
-			"price":  midPrice,
+	if e.orderManagerPID != nil && e.actorSystem != nil {
+		var priceForUpdate float64
+
+		if len(orderBook.Bids) > 0 && len(orderBook.Asks) > 0 {
+			// Normal case: use mid price
+			priceForUpdate = (orderBook.Bids[0].Price + orderBook.Asks[0].Price) / 2
+		} else if len(orderBook.Bids) > 0 {
+			// Only bids available: use bid price
+			priceForUpdate = orderBook.Bids[0].Price
+		} else if len(orderBook.Asks) > 0 {
+			// Only asks available: use ask price
+			priceForUpdate = orderBook.Asks[0].Price
 		}
-		e.actorSystem.Send(e.orderManagerPID, priceUpdate)
+
+		if priceForUpdate > 0 {
+			priceUpdate := map[string]interface{}{
+				"type":   "price_update",
+				"symbol": orderBook.Symbol,
+				"price":  priceForUpdate,
+			}
+			e.actorSystem.Send(e.orderManagerPID, priceUpdate)
+		}
 	}
 }
 

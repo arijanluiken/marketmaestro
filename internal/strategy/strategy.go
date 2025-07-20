@@ -353,25 +353,55 @@ func (s *StrategyActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg
 
 	s.orderBook = msg.OrderBook
 
-	// Check if order book has valid bids and asks before accessing
-	if len(msg.OrderBook.Bids) == 0 || len(msg.OrderBook.Asks) == 0 {
+	// Check if order book has at least some data (either bids or asks)
+	if len(msg.OrderBook.Bids) == 0 && len(msg.OrderBook.Asks) == 0 {
 		s.logger.Debug().
 			Str("symbol", msg.OrderBook.Symbol).
-			Int("bids", len(msg.OrderBook.Bids)).
-			Int("asks", len(msg.OrderBook.Asks)).
-			Msg("Received empty order book, skipping")
+			Msg("Received completely empty order book, skipping")
 		return
 	}
 
-	s.logger.Debug().
-		Str("symbol", msg.OrderBook.Symbol).
-		Float64("bid", msg.OrderBook.Bids[0].Price).
-		Float64("ask", msg.OrderBook.Asks[0].Price).
-		Msg("Received order book data")
+	// Handle partial order book data (common during low liquidity periods)
+	var bidPrice, askPrice float64
+	var midPrice float64
+
+	if len(msg.OrderBook.Bids) > 0 {
+		bidPrice = msg.OrderBook.Bids[0].Price
+	}
+	if len(msg.OrderBook.Asks) > 0 {
+		askPrice = msg.OrderBook.Asks[0].Price
+	}
+
+	// Calculate price for order manager updates
+	if len(msg.OrderBook.Bids) > 0 && len(msg.OrderBook.Asks) > 0 {
+		// Normal case: both bids and asks available
+		midPrice = (bidPrice + askPrice) / 2
+		s.logger.Debug().
+			Str("symbol", msg.OrderBook.Symbol).
+			Float64("bid", bidPrice).
+			Float64("ask", askPrice).
+			Float64("mid", midPrice).
+			Msg("Received complete order book data")
+	} else if len(msg.OrderBook.Bids) > 0 {
+		// Only bids available - use bid price
+		midPrice = bidPrice
+		s.logger.Debug().
+			Str("symbol", msg.OrderBook.Symbol).
+			Float64("bid", bidPrice).
+			Int("asks", len(msg.OrderBook.Asks)).
+			Msg("Received order book with bids only (low liquidity)")
+	} else if len(msg.OrderBook.Asks) > 0 {
+		// Only asks available - use ask price
+		midPrice = askPrice
+		s.logger.Debug().
+			Str("symbol", msg.OrderBook.Symbol).
+			Float64("ask", askPrice).
+			Int("bids", len(msg.OrderBook.Bids)).
+			Msg("Received order book with asks only (low liquidity)")
+	}
 
 	// Send price update to order manager for stop/trailing orders
-	if s.orderManagerPID != nil {
-		midPrice := (msg.OrderBook.Bids[0].Price + msg.OrderBook.Asks[0].Price) / 2
+	if s.orderManagerPID != nil && midPrice > 0 {
 		priceUpdate := map[string]interface{}{
 			"type":   "price_update",
 			"symbol": msg.OrderBook.Symbol,
@@ -381,6 +411,7 @@ func (s *StrategyActor) onOrderBookData(ctx *actor.Context, msg OrderBookDataMsg
 	}
 
 	// Execute strategy with orderbook callback if we have enough data
+	// Strategy can decide how to handle partial order book data
 	if len(s.klineBuffer) >= 1 {
 		s.executeOrderBookCallback(ctx, msg.OrderBook)
 	}

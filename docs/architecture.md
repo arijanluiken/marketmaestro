@@ -179,6 +179,46 @@ API Actor → Exchange Actor → Child Actors (gather status)
 - **Notification Messages**: Event notifications (`OrderUpdateMsg`, `BalanceUpdateMsg`)
 - **Configuration Messages**: Settings management (`SetSettingMsg`, `LoadSettingsMsg`)
 
+### Order Book Data Handling
+
+The system implements robust order book processing that gracefully handles real-world market conditions:
+
+#### Partial Order Book Support
+- **Low Liquidity Handling**: Accepts order books with only bids or only asks (common in crypto markets)
+- **Price Calculation**: Uses bid price when asks are unavailable, ask price when bids are unavailable
+- **Fallback Logic**: Mid-price calculation when both sides are available
+
+#### Exchange Actor Processing
+```go
+func (e *ExchangeActor) OnOrderBook(orderBook *exchanges.OrderBook) {
+    // Only warn for completely empty order books
+    if len(orderBook.Bids) == 0 && len(orderBook.Asks) == 0 {
+        e.logger.Warn().Msg("Completely empty order book received")
+        return
+    }
+    
+    // Debug log for partial order books (normal during low liquidity)
+    if len(orderBook.Bids) == 0 || len(orderBook.Asks) == 0 {
+        e.logger.Debug().Msg("Partial order book received (low liquidity)")
+    }
+    
+    // Calculate appropriate price for order management
+    var priceForUpdate float64
+    if len(orderBook.Bids) > 0 && len(orderBook.Asks) > 0 {
+        priceForUpdate = (orderBook.Bids[0].Price + orderBook.Asks[0].Price) / 2
+    } else if len(orderBook.Bids) > 0 {
+        priceForUpdate = orderBook.Bids[0].Price
+    } else if len(orderBook.Asks) > 0 {
+        priceForUpdate = orderBook.Asks[0].Price
+    }
+}
+```
+
+#### Strategy Actor Processing
+- **Flexible Validation**: Strategies receive partial order books and decide how to handle them
+- **Context Awareness**: Order book state is available in strategy context for decision making
+- **Risk Management**: Strategies can implement custom logic for low-liquidity scenarios
+
 ## Exchange Integration Layer
 
 ### Exchange Interface (`pkg/exchanges/interface.go`)

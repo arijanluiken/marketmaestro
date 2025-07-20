@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-## [Unreleased]
+- **Order Book Data Handling**: Improved processing of partial order books during low liquidity periods
+  - Exchange actors now only warn for completely empty order books (0 bids AND 0 asks)
+  - Partial order books (bids only or asks only) are logged at debug level instead of warning
+  - Strategy actors gracefully handle partial order books with appropriate price calculation
+  - Order managers receive price updates using best available price (bid, ask, or mid-price)
+  - Reduced noisy warnings that were previously logged for normal market conditions
 
-### Fixed
 - **Chart Price Accuracy**: Fixed BTCUSDT charts showing incorrect prices (~$128k) by implementing USD index price adjustment for Bybit testnet. Charts now display real-world Bitcoin prices (~$118k) while preserving OHLC candlestick patterns and volume data. The fix applies a dynamic ratio based on the difference between Bybit's spot market price and USD index price to ensure accurate price representation.
 
 ### Improved  

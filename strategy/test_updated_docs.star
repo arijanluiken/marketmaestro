@@ -15,6 +15,12 @@ state = {
     "position": 0
 }
 
+# Initialize strategy parameters like working strategies do
+params = settings()
+sma_period = config.get("sma_period", params["sma_period"])
+rsi_period = config.get("rsi_period", params["rsi_period"])
+position_size = config.get("position_size", params["position_size"])
+
 def on_start():
     """Test the on_start callback"""
     print("🚀 Test strategy starting")
@@ -37,9 +43,7 @@ def on_kline(kline):
         "volume": kline.volume
     })
     
-    # Keep buffer manageable 
-    sma_period = config.get("sma_period", 10)
-    rsi_period = config.get("rsi_period", 14)
+    # Keep buffer manageable using module-level parameters
     max_needed = max(sma_period, rsi_period) + 10
     
     if len(state["klines"]) > max_needed:
@@ -63,31 +67,28 @@ def on_kline(kline):
     current_sma = sma_values[-1]
     current_rsi = rsi_values[-1]
     
-    # Test configuration access
-    position_size = config.get("position_size", 0.01)
-    
     # Simple strategy logic to test signal return format
     if current_rsi < 30 and current_price > current_sma:
-        log(f"BUY signal: RSI {round(current_rsi, 1)} oversold, price {current_price} above SMA {round(current_sma, 2)}")
+        log("BUY signal: RSI " + str(round(current_rsi, 1)) + " oversold, price " + str(current_price) + " above SMA " + str(round(current_sma, 2)))
         return {
             "action": "buy",
             "quantity": position_size,
             "type": "market",
-            "reason": f"RSI oversold at {round(current_rsi, 1)}"
+            "reason": "RSI oversold at " + str(round(current_rsi, 1))
         }
     
     elif current_rsi > 70 and current_price < current_sma:
-        log(f"SELL signal: RSI {round(current_rsi, 1)} overbought, price {current_price} below SMA {round(current_sma, 2)}")
+        log("SELL signal: RSI " + str(round(current_rsi, 1)) + " overbought, price " + str(current_price) + " below SMA " + str(round(current_sma, 2)))
         return {
             "action": "sell", 
             "quantity": position_size,
             "type": "market",
-            "reason": f"RSI overbought at {round(current_rsi, 1)}"
+            "reason": "RSI overbought at " + str(round(current_rsi, 1))
         }
     
     return {
         "action": "hold",
-        "reason": f"Waiting - RSI: {round(current_rsi, 1)}, Price vs SMA: {round((current_price/current_sma - 1)*100, 1)}%"
+        "reason": "Waiting - RSI: " + str(round(current_rsi, 1)) + ", Price vs SMA: " + str(round((current_price/current_sma - 1)*100, 1)) + "%"
     }
 
 def on_orderbook(orderbook):

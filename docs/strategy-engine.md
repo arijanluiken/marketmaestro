@@ -61,7 +61,7 @@ def settings():
 ```python
 def on_kline(kline):
     """Handle new kline/candlestick data"""
-    current_price = kline.close
+    current_price = kline.close  # Using attribute access
     
     # Your trading logic here
     if should_buy():
@@ -160,12 +160,9 @@ These variables are automatically available in all strategy functions:
 ### Market Data
 - **`symbol`** (string): Current trading pair (e.g., "BTCUSDT")
 - **`exchange`** (string): Exchange name (e.g., "bybit", "bitvavo")
-- **`close`** (list): Array of closing prices from historical klines
-- **`open`** (list): Array of opening prices from historical klines  
-- **`high`** (list): Array of high prices from historical klines
-- **`low`** (list): Array of low prices from historical klines
-- **`volume`** (list): Array of volume data from historical klines
 - **`klines`** (list): Full historical kline objects
+
+**Note**: Global price arrays (`close`, `open`, `high`, `low`, `volume`) have been removed. Strategies should extract price data from callback parameters or maintain their own internal buffers.
 
 ### Configuration
 - **`config`** (dict): Strategy configuration from settings() merged with user overrides
@@ -175,10 +172,10 @@ These variables are automatically available in all strategy functions:
 - **`ask`** (float): Best ask price  
 - **`spread`** (float): Current bid-ask spread
 
-### Callback-Specific Variables
-- **`kline`** (object): Current kline in `on_kline()` callback
-- **`orderbook`** (object): Current orderbook in `on_orderbook()` callback
-- **`ticker`** (object): Current ticker in `on_ticker()` callback
+### Callback-Specific Variables  
+- **`kline`** (object): Current kline in `on_kline()` callback (has attributes: timestamp, open, high, low, close, volume, symbol)
+- **`orderbook`** (object): Current orderbook in `on_orderbook()` callback (dictionary with bids, asks, symbol, timestamp)
+- **`ticker`** (object): Current ticker in `on_ticker()` callback (dictionary with symbol, price, volume, timestamp)
 
 ## Built-in Functions
 
@@ -208,8 +205,20 @@ sma_values = sma(prices, period)
 
 ```python
 # Example: 20-period SMA of closing prices
-sma20 = sma(close, 20)
-current_sma = sma20[-1]  # Latest SMA value
+# Note: Extract price data from your internal buffer, not global arrays
+def on_kline(kline):
+    # Maintain internal price buffer
+    state["klines"].append({
+        "close": kline.close,
+        # ... other price data
+    })
+    
+    # Extract close prices 
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 20:
+        sma20 = sma(close_prices, 20)
+        current_sma = sma20[-1]  # Latest SMA value
 ```
 
 #### Exponential Moving Average (EMA)
@@ -221,8 +230,14 @@ ema_values = ema(prices, period)
 - **Returns**: List of EMA values
 
 ```python
-# Example: 12-period EMA
-ema12 = ema(close, 12)
+# Example: 12-period EMA 
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    # Update internal buffer with new kline data
+    close_prices = extract_closes_from_internal_buffer()
+    
+    if len(close_prices) >= 12:
+        ema12 = ema(close_prices, 12)
 ```
 
 ### Momentum Indicators
@@ -237,13 +252,18 @@ rsi_values = rsi(prices, period)
 
 ```python
 # Example: Standard 14-period RSI
-rsi14 = rsi(close, 14)
-current_rsi = rsi14[-1]
-
-if current_rsi > 70:
-    # Overbought condition
-elif current_rsi < 30:
-    # Oversold condition
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 14:
+        rsi14 = rsi(close_prices, 14)
+        current_rsi = rsi14[-1]
+        
+        if current_rsi > 70:
+            # Overbought condition
+        elif current_rsi < 30:
+            # Oversold condition
 ```
 
 #### MACD (Moving Average Convergence Divergence)
@@ -258,14 +278,20 @@ macd_result = macd(prices, fast_period=12, slow_period=26, signal_period=9)
 
 ```python
 # Example: Standard MACD
-macd_data = macd(close)
-macd_line = macd_data["macd"]
-signal_line = macd_data["signal"]
-histogram = macd_data["histogram"]
-
-# Check for bullish crossover
-if macd_line[-1] > signal_line[-1] and macd_line[-2] <= signal_line[-2]:
-    # MACD crossed above signal line
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 26:
+        macd_data = macd(close_prices)
+        macd_line = macd_data["macd"]
+        signal_line = macd_data["signal"]
+        histogram = macd_data["histogram"]
+        
+        # Check for bullish crossover
+        if len(macd_line) >= 2 and len(signal_line) >= 2:
+            if macd_line[-1] > signal_line[-1] and macd_line[-2] <= signal_line[-2]:
+                # MACD crossed above signal line
 ```
 
 #### Stochastic Oscillator
@@ -297,13 +323,19 @@ bb_result = bollinger(prices, period=20, multiplier=2.0)
 
 ```python
 # Example: Standard Bollinger Bands
-bb = bollinger(close, 20, 2.0)
-upper_band = bb["upper"]
-middle_band = bb["middle"]  # 20-period SMA
-lower_band = bb["lower"]
-
-# Check for band squeeze
-band_width = (upper_band[-1] - lower_band[-1]) / middle_band[-1]
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 20:
+        bb = bollinger(close_prices, 20, 2.0)
+        upper_band = bb["upper"]
+        middle_band = bb["middle"]  # 20-period SMA
+        lower_band = bb["lower"]
+        
+        # Check for band squeeze
+        if len(upper_band) > 0 and len(middle_band) > 0 and len(lower_band) > 0:
+            band_width = (upper_band[-1] - lower_band[-1]) / middle_band[-1]
 ```
 
 #### Average True Range (ATR)
@@ -316,8 +348,15 @@ atr_values = atr(high, low, close, period=14)
 
 ```python
 # Example: 14-period ATR for volatility measurement
-atr14 = atr(high, low, close, 14)
-current_volatility = atr14[-1]
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 14:
+        atr14 = atr(high_prices, low_prices, close_prices, 14)
+        current_volatility = atr14[-1]
 ```
 
 ### Volume Indicators
@@ -331,12 +370,21 @@ vwap_values = vwap(high, low, close, volume)
 
 ```python
 # Example: VWAP calculation
-vwap_line = vwap(high, low, close, volume)
-current_vwap = vwap_line[-1]
-
-# Price above VWAP suggests bullish sentiment
-if close[-1] > current_vwap:
-    # Price above VWAP
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
+    volume_data = [k["volume"] for k in state["klines"]]
+    
+    if len(close_prices) >= 20:
+        vwap_line = vwap(high_prices, low_prices, close_prices, volume_data)
+        current_vwap = vwap_line[-1]
+        current_price = kline.close
+        
+        # Price above VWAP suggests bullish sentiment
+        if current_price > current_vwap:
+            # Price above VWAP
 ```
 
 #### Money Flow Index (MFI)
@@ -382,14 +430,20 @@ psar_values = parabolic_sar(high, low, step=0.02, max_step=0.2)
 
 ```python
 # Example: Parabolic SAR for trend following
-psar = parabolic_sar(high, low)
-current_price = close[-1]
-current_psar = psar[-1]
-
-if current_price > current_psar:
-    # Uptrend
-else:
-    # Downtrend
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    
+    if len(high_prices) >= 20:
+        psar = parabolic_sar(high_prices, low_prices)
+        current_price = kline.close
+        current_psar = psar[-1]
+        
+        if current_price > current_psar:
+            # Uptrend
+        else:
+            # Downtrend
 ```
 
 #### Ichimoku Cloud
@@ -438,11 +492,17 @@ fib_levels = fibonacci(high_price, low_price)
 
 ```python
 # Example: Fibonacci retracement between swing high/low
-recent_high = max(high[-20:])  # Highest in last 20 periods
-recent_low = min(low[-20:])    # Lowest in last 20 periods
-
-fib = fibonacci(recent_high, recent_low)
-fib_618 = fib["61.8"]  # Key retracement level
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    
+    if len(high_prices) >= 20:
+        recent_high = max(high_prices[-20:])  # Highest in last 20 periods
+        recent_low = min(low_prices[-20:])    # Lowest in last 20 periods
+        
+        fib = fibonacci(recent_high, recent_low)
+        fib_618 = fib["61.8"]  # Key retracement level
 ```
 
 #### True Strength Index (TSI)
@@ -475,15 +535,21 @@ donchian_result = donchian(high, low, period=20)
 
 ```python
 # Example: Donchian breakout strategy
-channels = donchian(high, low, 20)
-upper_channel = channels["upper"][-1]
-lower_channel = channels["lower"][-1]
-current_price = close[-1]
-
-if current_price > upper_channel:
-    # Upside breakout
-elif current_price < lower_channel:
-    # Downside breakout
+# Extract from internal buffer in callback function  
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    
+    if len(high_prices) >= 20:
+        channels = donchian(high_prices, low_prices, 20)
+        upper_channel = channels["upper"][-1]
+        lower_channel = channels["lower"][-1]
+        current_price = kline.close
+        
+        if current_price > upper_channel:
+            # Upside breakout
+        elif current_price < lower_channel:
+            # Downside breakout
 ```
 
 #### Advanced CCI with Smoothing
@@ -557,14 +623,19 @@ kama_values = kama(prices, period=10, fast_sc=2, slow_sc=30)
 
 ```python
 # Example: KAMA trend following
-kama_line = kama(close, 10, 2, 30)
-current_kama = kama_line[-1]
-current_price = close[-1]
-
-if current_price > current_kama:
-    # Uptrend confirmed
-else:
-    # Downtrend or sideways
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 10:
+        kama_line = kama(close_prices, 10, 2, 30)
+        current_kama = kama_line[-1]
+        current_price = kline.close
+        
+        if current_price > current_kama:
+            # Uptrend confirmed
+        else:
+            # Downtrend or sideways
 ```
 
 #### Chaikin Oscillator
@@ -578,13 +649,21 @@ chaikin_values = chaikin_oscillator(high, low, close, volume, fast_period=3, slo
 
 ```python
 # Example: Chaikin volume-price analysis
-chaikin = chaikin_oscillator(high, low, close, volume, 3, 10)
-current_chaikin = chaikin[-1]
-
-if current_chaikin > 0:
-    # Accumulation (buying pressure)
-else:
-    # Distribution (selling pressure)
+# Extract from internal buffer in callback function  
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
+    volume_data = [k["volume"] for k in state["klines"]]
+    
+    if len(close_prices) >= 10:
+        chaikin = chaikin_oscillator(high_prices, low_prices, close_prices, volume_data, 3, 10)
+        current_chaikin = chaikin[-1]
+        
+        if current_chaikin > 0:
+            # Accumulation (buying pressure)
+        else:
+            # Distribution (selling pressure)
 ```
 
 #### Ultimate Oscillator
@@ -673,15 +752,22 @@ supertrend_result = supertrend(high, low, close, period=10, multiplier=3.0)
 
 ```python
 # Example: Supertrend trading signals
-st = supertrend(high, low, close, 10, 3.0)
-supertrend_line = st["supertrend"][-1]
-is_uptrend = st["trend"][-1]
-current_price = close[-1]
-
-if is_uptrend and current_price > supertrend_line:
-    # Strong buy signal
-elif not is_uptrend and current_price < supertrend_line:
-    # Strong sell signal
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 20:
+        st = supertrend(high_prices, low_prices, close_prices, 10, 3.0)
+        supertrend_line = st["supertrend"][-1]
+        is_uptrend = st["trend"][-1]
+        current_price = kline.close
+        
+        if is_uptrend and current_price > supertrend_line:
+            # Strong buy signal
+        elif not is_uptrend and current_price < supertrend_line:
+            # Strong sell signal
 ```
 
 #### Stochastic RSI
@@ -873,15 +959,22 @@ chandelier_result = chandelier_exit(high, low, close, period=22, multiplier=3.0)
 
 ```python
 # Example: Chandelier Exit levels
-chandelier = chandelier_exit(high, low, close, 22, 3.0)
-long_exit = chandelier["long_exit"][-1]
-short_exit = chandelier["short_exit"][-1]
-current_price = close[-1]
-
-if current_price < long_exit:
-    # Exit long position
-elif current_price > short_exit:
-    # Exit short position
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 22:
+        chandelier = chandelier_exit(high_prices, low_prices, close_prices, 22, 3.0)
+        long_exit = chandelier["long_exit"][-1]
+        short_exit = chandelier["short_exit"][-1]
+        current_price = kline.close
+        
+        if current_price < long_exit:
+            # Exit long position
+        elif current_price > short_exit:
+            # Exit short position
 ```
 
 #### Chande Kroll Stop
@@ -910,16 +1003,22 @@ channel_result = price_channel(high, low, period=20)
 
 ```python
 # Example: Price Channel breakout strategy
-channels = price_channel(high, low, 20)
-upper_channel = channels["upper"][-1]
-lower_channel = channels["lower"][-1]
-middle_channel = channels["middle"][-1]
-current_price = close[-1]
-
-if current_price > upper_channel:
-    # Upside breakout
-elif current_price < lower_channel:
-    # Downside breakout
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    
+    if len(high_prices) >= 20:
+        channels = price_channel(high_prices, low_prices, 20)
+        upper_channel = channels["upper"][-1]
+        lower_channel = channels["lower"][-1]
+        middle_channel = channels["middle"][-1]
+        current_price = kline.close
+        
+        if current_price > upper_channel:
+            # Upside breakout
+        elif current_price < lower_channel:
+            # Downside breakout
 ```
 
 #### Mass Index
@@ -1130,7 +1229,13 @@ highest_values = highest(prices, period)
 lowest_values = lowest(prices, period)
 
 # Example: Find highest high in last 20 periods
-recent_high = highest(high, 20)[-1]
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    high_prices = [k["high"] for k in state["klines"]]
+    
+    if len(high_prices) >= 20:
+        recent_high_values = highest(high_prices, 20)
+        recent_high = recent_high_values[-1]
 ```
 
 ### Signal Detection
@@ -1142,12 +1247,17 @@ crossover_signals = crossover(series1, series2)
 crossunder_signals = crossunder(series1, series2)
 
 # Example: MA crossover detection
-short_ma = sma(close, 10)
-long_ma = sma(close, 20)
-bullish_cross = crossover(short_ma, long_ma)
-
-if bullish_cross[-1]:  # Latest value is True
-    # Short MA just crossed above Long MA
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 20:
+        short_ma = sma(close_prices, 10)
+        long_ma = sma(close_prices, 20)
+        bullish_cross = crossover(short_ma, long_ma)
+        
+        if len(bullish_cross) > 0 and bullish_cross[-1]:  # Latest value is True
+            # Short MA just crossed above Long MA
 ```
 
 ## Signal Return Format
@@ -1242,43 +1352,79 @@ ticker = {
 state = {
     "position": 0,
     "last_signal": "hold",
-    "indicators": {}
+    "indicators": {},
+    "klines": []  # Internal buffer for price data
 }
 
-# Cache expensive calculations
-def update_indicators():
-    if len(close) >= 20:
-        state["indicators"]["sma20"] = sma(close, 20)
-        state["indicators"]["rsi"] = rsi(close, 14)
+def on_kline(kline):
+    # Update internal buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Keep buffer size manageable
+    if len(state["klines"]) > 100:
+        state["klines"] = state["klines"][-100:]
+    
+    # Extract price arrays for calculations
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    # Cache expensive calculations
+    if len(close_prices) >= 20:
+        state["indicators"]["sma20"] = sma(close_prices, 20)
+        state["indicators"]["rsi"] = rsi(close_prices, 14)
 ```
 
 ### 2. Data Validation
 ```python
 def on_kline(kline):
+    # Maintain internal buffer
+    state["klines"].append({
+        "close": kline.close,
+        "high": kline.high,
+        "low": kline.low,
+        # ... other data
+    })
+    
+    # Extract prices from internal buffer  
+    close_prices = [k["close"] for k in state["klines"]]
+    
     # Always validate data availability
-    if len(close) < 20:
+    if len(close_prices) < 20:
         return {"action": "hold", "reason": "Insufficient data"}
     
     # Check for valid indicator values
-    current_rsi = rsi(close, 14)[-1]
+    current_rsi = rsi(close_prices, 14)[-1]
     if math.isnan(current_rsi):
         return {"action": "hold", "reason": "Invalid RSI"}
 ```
 
 ### 3. Risk Management
 ```python
-def calculate_position_size(price, risk_percent=1.0):
+def calculate_position_size(kline, risk_percent=1.0):
     """Calculate position size based on risk percentage"""
     account_balance = 1000.0  # Get from config or API
     risk_amount = account_balance * (risk_percent / 100)
     
-    # Calculate stop loss distance
-    atr_value = atr(high, low, close, 14)[-1]
-    stop_distance = atr_value * 2  # 2 ATR stop
+    # Extract price data from internal buffer
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
     
-    if stop_distance > 0:
-        position_size = risk_amount / stop_distance
-        return min(position_size, account_balance * 0.1)  # Max 10% of balance
+    # Calculate stop loss distance using ATR
+    if len(close_prices) >= 14:
+        atr_values = atr(high_prices, low_prices, close_prices, 14)
+        atr_value = atr_values[-1]
+        stop_distance = atr_value * 2  # 2 ATR stop
+        
+        if stop_distance > 0:
+            position_size = risk_amount / stop_distance
+            return min(position_size, account_balance * 0.1)  # Max 10% of balance
     
     return 0.01  # Default small size
 ```
@@ -1289,18 +1435,27 @@ def confirm_signal(primary_signal):
     """Use multiple indicators to confirm signals"""
     confirmations = 0
     
+    # Extract price data from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    volume_data = [k["volume"] for k in state["klines"]]
+    
+    if len(close_prices) < 20:
+        return False
+    
     # RSI confirmation
-    current_rsi = rsi(close, 14)[-1]
+    rsi_values = rsi(close_prices, 14)
+    current_rsi = rsi_values[-1]
     if primary_signal == "buy" and current_rsi < 50:
         confirmations += 1
     elif primary_signal == "sell" and current_rsi > 50:
         confirmations += 1
     
     # Volume confirmation
-    current_volume = volume[-1]
-    avg_volume = sma(volume, 20)[-1]
-    if current_volume > avg_volume * 1.5:
-        confirmations += 1
+    if len(volume_data) >= 20:
+        current_volume = volume_data[-1]
+        avg_volume = sma(volume_data, 20)[-1]
+        if current_volume > avg_volume * 1.5:
+            confirmations += 1
     
     return confirmations >= 2  # Require at least 2 confirmations
 ```
@@ -1318,26 +1473,46 @@ def settings():
         "position_size": 0.01
     }
 
+# Strategy state to maintain kline buffer
 state = {
+    "klines": [],
     "position": 0,
     "entry_price": 0
 }
 
 def on_kline(kline):
-    # Get configuration
+    # Maintain internal kline buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Keep only what we need for calculations
     rsi_period = config.get("rsi_period", 14)
+    max_needed = rsi_period + 10
+    if len(state["klines"]) > max_needed:
+        state["klines"] = state["klines"][-max_needed:]
+    
+    # Check data availability
+    if len(state["klines"]) < rsi_period + 1:
+        return {"action": "hold", "reason": "Insufficient data"}
+    
+    # Extract close prices from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    # Calculate RSI
+    rsi_values = rsi(close_prices, rsi_period)
+    current_rsi = rsi_values[-1]
+    current_price = kline.close
+    
+    # Get configuration
     oversold = config.get("oversold", 30)
     overbought = config.get("overbought", 70)
     position_size = config.get("position_size", 0.01)
-    
-    # Check data availability
-    if len(close) < rsi_period + 1:
-        return {"action": "hold", "reason": "Insufficient data"}
-    
-    # Calculate RSI
-    rsi_values = rsi(close, rsi_period)
-    current_rsi = rsi_values[-1]
-    current_price = close[-1]
     
     # Entry signals
     if state["position"] == 0:  # No position
@@ -1379,27 +1554,46 @@ def settings():
     }
 
 state = {
+    "klines": [],
     "trend": "none",
     "position": 0
 }
 
 def on_kline(kline):
+    # Maintain internal kline buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
     # Configuration
     fast_period = config.get("fast_ma", 12)
     slow_period = config.get("slow_ma", 26)
     
-    # Data validation
+    # Data validation - keep sufficient buffer
     min_periods = max(fast_period, slow_period, 14) + 5
-    if len(close) < min_periods:
+    if len(state["klines"]) > min_periods * 2:
+        state["klines"] = state["klines"][-min_periods * 2:]
+    
+    if len(state["klines"]) < min_periods:
         return {"action": "hold", "reason": "Insufficient data"}
     
-    # Calculate indicators
-    fast_ma = ema(close, fast_period)
-    slow_ma = ema(close, slow_period)
-    rsi_values = rsi(close, 14)
-    atr_values = atr(high, low, close, 14)
+    # Extract price arrays from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
     
-    current_price = close[-1]
+    # Calculate indicators
+    fast_ma = ema(close_prices, fast_period)
+    slow_ma = ema(close_prices, slow_period)
+    rsi_values = rsi(close_prices, 14)
+    atr_values = atr(high_prices, low_prices, close_prices, 14)
+    
+    current_price = kline.close
     current_fast = fast_ma[-1]
     current_slow = slow_ma[-1]
     current_rsi = rsi_values[-1]
@@ -1473,8 +1667,13 @@ def on_kline(kline):
 #### 1. Insufficient Data
 ```python
 # Always check data length before indicator calculations
-if len(close) < required_periods:
-    return {"action": "hold", "reason": "Insufficient data"}
+def on_kline(kline):
+    # Extract from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    required_periods = 20  # Or whatever your strategy needs
+    if len(close_prices) < required_periods:
+        return {"action": "hold", "reason": "Insufficient data"}
 ```
 
 #### 2. NaN Values
@@ -1498,10 +1697,15 @@ else:
 #### 4. Array Index Errors
 ```python
 # Use safe array access
-if len(close) > 0:
-    current_price = close[-1]
-else:
-    return {"action": "hold", "reason": "No price data"}
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) > 0:
+        current_price = close_prices[-1]
+        # Or use the kline parameter directly
+        current_price = kline.close
+    else:
+        return {"action": "hold", "reason": "No price data"}
 ```
 
 ### Debug Logging

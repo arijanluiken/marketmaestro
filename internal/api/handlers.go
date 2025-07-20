@@ -916,7 +916,8 @@ func (a *APIActor) getStrategyStats(strategyID string) (map[string]interface{}, 
 
 	row := a.db.QueryRow(query, strategyID)
 
-	var totalOrders, buyOrders, sellOrders int
+	var totalOrders int
+	var buyOrders, sellOrders sql.NullInt64
 	var totalVolume, avgOrderSize sql.NullFloat64
 
 	if err := row.Scan(&totalOrders, &buyOrders, &sellOrders, &totalVolume, &avgOrderSize); err != nil {
@@ -924,8 +925,18 @@ func (a *APIActor) getStrategyStats(strategyID string) (map[string]interface{}, 
 	}
 
 	stats["total_orders"] = totalOrders
-	stats["buy_orders"] = buyOrders
-	stats["sell_orders"] = sellOrders
+
+	if buyOrders.Valid {
+		stats["buy_orders"] = buyOrders.Int64
+	} else {
+		stats["buy_orders"] = 0
+	}
+
+	if sellOrders.Valid {
+		stats["sell_orders"] = sellOrders.Int64
+	} else {
+		stats["sell_orders"] = 0
+	}
 
 	if totalVolume.Valid {
 		stats["total_volume"] = totalVolume.Float64

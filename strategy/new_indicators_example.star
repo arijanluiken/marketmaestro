@@ -1,3 +1,10 @@
+# New Indicators Example Strategy
+# Updated to use callback-provided data instead of global variables
+
+state = {
+    "klines": []
+}
+
 def settings():
     return {
         "interval": "5m",
@@ -9,28 +16,49 @@ def settings():
     }
 
 def on_kline(kline):
+    # Add new kline to internal buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Keep only what we need for calculations
+    max_needed = 100
+    if len(state["klines"]) > max_needed:
+        state["klines"] = state["klines"][-max_needed:]
+    
     # Ensure we have enough data
-    if len(close) < 50:
+    if len(state["klines"]) < 50:
         return {"action": "hold", "reason": "Insufficient data"}
     
+    # Extract price arrays from internal buffer
+    opens = [k["open"] for k in state["klines"]]
+    highs = [k["high"] for k in state["klines"]]
+    lows = [k["low"] for k in state["klines"]]
+    closes = [k["close"] for k in state["klines"]]
+    
     # Calculate Hull Moving Average for trend direction
-    hma = hull_ma(close, config.get("hma_period", 21))
+    hma = hull_ma(closes, config.get("hma_period", 21))
     current_hma = hma[-1]
     prev_hma = hma[-2]
     
     # Calculate Chande Momentum Oscillator for momentum
-    cmo = cmo(close, config.get("cmo_period", 14))
+    cmo = cmo(closes, config.get("cmo_period", 14))
     current_cmo = cmo[-1]
     
     # Calculate Schaff Trend Cycle for overbought/oversold
-    stc = stc(close, config.get("stc_fast", 12), config.get("stc_slow", 26), 10, 0.5)
+    stc = stc(closes, config.get("stc_fast", 12), config.get("stc_slow", 26), 10, 0.5)
     current_stc = stc[-1]
     
     # Calculate Balance of Power for buying/selling pressure
-    bop_values = bop(open, high, low, close)
+    bop_values = bop(opens, highs, lows, closes)
     current_bop = bop_values[-1]
     
-    current_price = close[-1]
+    current_price = closes[-1]
     position_size = config.get("position_size", 0.01)
     
     # HMA trend detection
@@ -66,3 +94,11 @@ def on_kline(kline):
         "action": "hold",
         "reason": f"Waiting for signals - CMO: {round(current_cmo, 1)}, STC: {round(current_stc, 1)}"
     }
+
+def on_orderbook(orderbook):
+    """Called when orderbook data is received"""
+    return {"action": "hold", "reason": "No orderbook signal"}
+
+def on_ticker(ticker):
+    """Called when ticker data is received"""
+    return {"action": "hold", "reason": "No ticker signal"}

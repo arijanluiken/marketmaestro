@@ -6,12 +6,75 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 
 	"github.com/arijanluiken/mercantile/pkg/exchanges"
 )
+
+// KlineObject is a Starlark object representing kline data with attribute access
+type KlineObject struct {
+	timestamp time.Time
+	open      float64
+	high      float64
+	low       float64
+	close     float64
+	volume    float64
+	symbol    string
+}
+
+// String returns the string representation of the KlineObject
+func (k *KlineObject) String() string {
+	return fmt.Sprintf("Kline(symbol=%s, timestamp=%s, close=%.4f)",
+		k.symbol, k.timestamp.Format("2006-01-02T15:04:05Z"), k.close)
+}
+
+// Type returns the type name for the object
+func (k *KlineObject) Type() string {
+	return "kline"
+}
+
+// Freeze makes the object immutable (required by Starlark interface)
+func (k *KlineObject) Freeze() {}
+
+// Truth returns whether the object is considered true (required by Starlark interface)
+func (k *KlineObject) Truth() starlark.Bool {
+	return starlark.True
+}
+
+// Hash returns a hash of the object (required by Starlark interface)
+func (k *KlineObject) Hash() (uint32, error) {
+	return starlark.String(k.String()).Hash()
+}
+
+// Attr returns the value of an attribute (enables kline.timestamp, kline.close, etc.)
+func (k *KlineObject) Attr(name string) (starlark.Value, error) {
+	switch name {
+	case "timestamp":
+		return starlark.String(k.timestamp.Format("2006-01-02T15:04:05Z")), nil
+	case "open":
+		return starlark.Float(k.open), nil
+	case "high":
+		return starlark.Float(k.high), nil
+	case "low":
+		return starlark.Float(k.low), nil
+	case "close":
+		return starlark.Float(k.close), nil
+	case "volume":
+		return starlark.Float(k.volume), nil
+	case "symbol":
+		return starlark.String(k.symbol), nil
+	default:
+		return nil, fmt.Errorf("kline has no attribute %q", name)
+	}
+}
+
+// AttrNames returns the list of available attributes
+func (k *KlineObject) AttrNames() []string {
+	return []string{"timestamp", "open", "high", "low", "close", "volume", "symbol"}
+}
 
 func (se *StrategyEngine) setupBuiltins() {
 	// Add built-in functions
@@ -283,11 +346,8 @@ func (se *StrategyEngine) prepareGlobals(ctx *StrategyContext) starlark.StringDi
 	// Add kline data
 	if len(ctx.Klines) > 0 {
 		globals["klines"] = se.klinesToStarlark(ctx.Klines)
-		globals["close"] = se.extractPrices(ctx.Klines, "close")
-		globals["open"] = se.extractPrices(ctx.Klines, "open")
-		globals["high"] = se.extractPrices(ctx.Klines, "high")
-		globals["low"] = se.extractPrices(ctx.Klines, "low")
-		globals["volume"] = se.extractPrices(ctx.Klines, "volume")
+		// Note: Global price arrays (close, open, high, low, volume) have been removed
+		// Strategies should use callback parameters instead
 	}
 
 	// Add order book data
@@ -356,15 +416,17 @@ func (se *StrategyEngine) ExecuteKlineCallback(strategyName string, ctx *Strateg
 	// Prepare globals with context data
 	globals := se.prepareGlobals(ctx)
 
-	// Add kline object
-	klineDict := starlark.NewDict(6)
-	klineDict.SetKey(starlark.String("timestamp"), starlark.String(kline.Timestamp.Format("2006-01-02T15:04:05Z")))
-	klineDict.SetKey(starlark.String("open"), starlark.Float(kline.Open))
-	klineDict.SetKey(starlark.String("high"), starlark.Float(kline.High))
-	klineDict.SetKey(starlark.String("low"), starlark.Float(kline.Low))
-	klineDict.SetKey(starlark.String("close"), starlark.Float(kline.Close))
-	klineDict.SetKey(starlark.String("volume"), starlark.Float(kline.Volume))
-	globals["kline"] = klineDict
+	// Add kline object - create a proper object with attribute access
+	klineObj := &KlineObject{
+		timestamp: kline.Timestamp,
+		open:      kline.Open,
+		high:      kline.High,
+		low:       kline.Low,
+		close:     kline.Close,
+		volume:    kline.Volume,
+		symbol:    kline.Symbol,
+	}
+	globals["kline"] = klineObj
 
 	// Execute strategy
 	result, err := starlark.ExecFile(thread, strategyName, script, globals)

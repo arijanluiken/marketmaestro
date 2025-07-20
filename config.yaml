@@ -35,10 +35,11 @@ exchanges:
               interval: "15m"  # 15-minute candles for RSI analysis
       - symbol: "ADAUSDT"
         strategies:
-          - name: "super_trend"
-            config:
-              position_size: 0.005
-              interval: "15m"  # 15-minute candles for RSI analysis
+          # Temporarily disabled due to validation issues
+          # - name: "super_trend"
+          #   config:
+          #     position_size: 0.005
+          #     interval: "15m"  # 15-minute candles for RSI analysis
       - symbol: "ETHUSDT"
         strategies:
           - name: "simple_sma"

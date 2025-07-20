@@ -1,26 +1,48 @@
 # Support and Resistance Strategy
 # Uses Pivot Points and Fibonacci levels for trading decisions
+# Updated to use callback-provided data instead of global variables
 
-def get_signal(data):
-    """
-    Strategy using pivot points and Fibonacci retracements
-    """
+state = {
+    "klines": []
+}
+
+def settings():
+    return {
+        "interval": "15m",
+        "lookback_period": 20,
+        "position_size": 0.01
+    }
+
+def on_kline(kline):
+    """Called when a new kline is received"""
+    # Add new kline to internal buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
     
-    # Get price data
-    high = data.get("high")
-    low = data.get("low")
-    close = data.get("close")
+    # Keep only what we need for calculations (prevent memory buildup)
+    max_needed = 100  # Keep 100 klines for calculations
+    if len(state["klines"]) > max_needed:
+        state["klines"] = state["klines"][-max_needed:]
     
-    if not high or not low or not close:
-        return {"action": "hold", "reason": "insufficient data"}
-    
-    if len(close) < 20:
+    # Check if we have enough data
+    if len(state["klines"]) < 20:
         return {"action": "hold", "reason": "not enough data points"}
+    
+    # Extract price arrays from internal buffer
+    highs = [k["high"] for k in state["klines"]]
+    lows = [k["low"] for k in state["klines"]]
+    closes = [k["close"] for k in state["klines"]]
     
     # Calculate indicators
     
     # 1. Pivot Points for support/resistance levels
-    pivot_result = pivot_points(high, low, close)
+    pivot_result = pivot_points(highs, lows, closes)
     pivot = pivot_result["pivot"]
     r1 = pivot_result["r1"] 
     r2 = pivot_result["r2"]
@@ -30,13 +52,13 @@ def get_signal(data):
     # 2. Find recent swing high and low for Fibonacci
     recent_high = 0
     recent_low = float('inf')
-    lookback = min(20, len(high))
+    lookback = min(20, len(highs))
     
-    for i in range(len(high) - lookback, len(high)):
-        if high[i] > recent_high:
-            recent_high = high[i]
-        if low[i] < recent_low:
-            recent_low = low[i]
+    for i in range(len(highs) - lookback, len(highs)):
+        if highs[i] > recent_high:
+            recent_high = highs[i]
+        if lows[i] < recent_low:
+            recent_low = lows[i]
     
     # Calculate Fibonacci retracement levels
     fib_levels = fibonacci(recent_high, recent_low)
@@ -46,14 +68,14 @@ def get_signal(data):
     fib_618 = fib_levels["61.8"]
     
     # 3. Simple Moving Averages for trend context
-    sma_20 = sma(close, 20)
-    sma_50 = sma(close, 50) if len(close) >= 50 else None
+    sma_20 = sma(closes, 20)
+    sma_50 = sma(closes, 50) if len(closes) >= 50 else None
     
     # 4. RSI for momentum
-    rsi_14 = rsi(close, 14)
+    rsi_14 = rsi(closes, 14)
     
     # Get current values
-    current_price = close[-1]
+    current_price = closes[-1]
     current_pivot = pivot[-1] if pivot[-1] else 0
     current_r1 = r1[-1] if r1[-1] else 0
     current_r2 = r2[-1] if r2[-1] else 0
@@ -78,6 +100,7 @@ def get_signal(data):
         return abs(price - level) <= tolerance
     
     # Strategy Logic
+    position_size = config.get("position_size", 0.01)
     
     # Buy conditions - price near support in uptrend
     if trend == "bullish" and current_rsi < 70:
@@ -85,7 +108,7 @@ def get_signal(data):
         if near_level(current_price, current_pivot) and current_price > current_pivot:
             return {
                 "action": "buy",
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price,
                 "type": "market",
                 "reason": f"Price bouncing off pivot support at {current_pivot:.2f} in bullish trend. RSI: {current_rsi:.1f}"
@@ -95,7 +118,7 @@ def get_signal(data):
         if near_level(current_price, current_s1) and current_price > current_s1:
             return {
                 "action": "buy", 
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price,
                 "type": "market",
                 "reason": f"Price bouncing off S1 support at {current_s1:.2f} in bullish trend. RSI: {current_rsi:.1f}"
@@ -105,7 +128,7 @@ def get_signal(data):
         if near_level(current_price, fib_618) and current_price > fib_618:
             return {
                 "action": "buy",
-                "quantity": 0.1, 
+                "quantity": position_size, 
                 "price": current_price,
                 "type": "market",
                 "reason": f"Price bouncing off 61.8% Fibonacci level at {fib_618:.2f} in bullish trend. RSI: {current_rsi:.1f}"
@@ -114,7 +137,7 @@ def get_signal(data):
         if near_level(current_price, fib_500) and current_price > fib_500:
             return {
                 "action": "buy",
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price, 
                 "type": "market",
                 "reason": f"Price bouncing off 50% Fibonacci level at {fib_500:.2f} in bullish trend. RSI: {current_rsi:.1f}"
@@ -126,7 +149,7 @@ def get_signal(data):
         if near_level(current_price, current_pivot) and current_price < current_pivot:
             return {
                 "action": "sell",
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price,
                 "type": "market", 
                 "reason": f"Price rejected at pivot resistance at {current_pivot:.2f} in bearish trend. RSI: {current_rsi:.1f}"
@@ -136,7 +159,7 @@ def get_signal(data):
         if near_level(current_price, current_r1) and current_price < current_r1:
             return {
                 "action": "sell",
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price,
                 "type": "market",
                 "reason": f"Price rejected at R1 resistance at {current_r1:.2f} in bearish trend. RSI: {current_rsi:.1f}"
@@ -146,7 +169,7 @@ def get_signal(data):
         if near_level(current_price, fib_382) and current_price < fib_382:
             return {
                 "action": "sell",
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price,
                 "type": "market",
                 "reason": f"Price rejected at 38.2% Fibonacci level at {fib_382:.2f} in bearish trend. RSI: {current_rsi:.1f}"
@@ -155,7 +178,7 @@ def get_signal(data):
         if near_level(current_price, fib_236) and current_price < fib_236:
             return {
                 "action": "sell",
-                "quantity": 0.1,
+                "quantity": position_size,
                 "price": current_price,
                 "type": "market",
                 "reason": f"Price rejected at 23.6% Fibonacci level at {fib_236:.2f} in bearish trend. RSI: {current_rsi:.1f}"
@@ -165,7 +188,7 @@ def get_signal(data):
     if current_rsi > 60 and current_price > current_r2:
         return {
             "action": "buy",
-            "quantity": 0.1,
+            "quantity": position_size,
             "price": current_price,
             "type": "market",
             "reason": f"Strong breakout above R2 resistance at {current_r2:.2f}. RSI: {current_rsi:.1f}"
@@ -174,7 +197,7 @@ def get_signal(data):
     if current_rsi < 40 and current_price < current_s2:
         return {
             "action": "sell", 
-            "quantity": 0.1,
+            "quantity": position_size,
             "price": current_price,
             "type": "market",
             "reason": f"Strong breakdown below S2 support at {current_s2:.2f}. RSI: {current_rsi:.1f}"
@@ -186,9 +209,10 @@ def get_signal(data):
         "reason": f"No clear setup. Price: {current_price:.2f}, Trend: {trend}, Pivot: {current_pivot:.2f}, RSI: {current_rsi:.1f}"
     }
 
-# Configuration
-config = {
-    "symbol": "BTCUSDT", 
-    "interval": "15m",
-    "description": "Support and resistance strategy using pivot points and Fibonacci retracements"
-}
+def on_orderbook(orderbook):
+    """Called when orderbook data is received"""
+    return {"action": "hold", "reason": "No orderbook signal"}
+
+def on_ticker(ticker):
+    """Called when ticker data is received"""
+    return {"action": "hold", "reason": "No ticker signal"}

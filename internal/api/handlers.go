@@ -836,23 +836,13 @@ func (a *APIActor) getStrategyDetails(strategyID string) map[string]interface{} 
 		details["stats"] = stats
 	}
 
-	// Get recent logs (mock implementation for now)
-	details["recent_logs"] = []map[string]interface{}{
-		{
-			"timestamp": time.Now().Add(-5 * time.Minute).Format(time.RFC3339),
-			"level":     "INFO",
-			"message":   "Strategy executed successfully",
-		},
-		{
-			"timestamp": time.Now().Add(-10 * time.Minute).Format(time.RFC3339),
-			"level":     "INFO",
-			"message":   "Received kline data for analysis",
-		},
-		{
-			"timestamp": time.Now().Add(-15 * time.Minute).Format(time.RFC3339),
-			"level":     "DEBUG",
-			"message":   "SMA calculation completed",
-		},
+	// Get recent logs from database
+	logs, err := a.getStrategyLogs(strategyID, 10)
+	if err != nil {
+		a.logger.Error().Err(err).Str("strategy_id", strategyID).Msg("Failed to get strategy logs")
+		details["recent_logs"] = []map[string]interface{}{} // Return empty array instead of mock data
+	} else {
+		details["recent_logs"] = logs
 	}
 
 	return details
@@ -955,4 +945,26 @@ func (a *APIActor) getStrategyStats(strategyID string) (map[string]interface{}, 
 	}
 
 	return stats, nil
+}
+
+// getStrategyLogs retrieves recent logs for a strategy from cache
+func (a *APIActor) getStrategyLogs(strategyID string, limit int) ([]map[string]interface{}, error) {
+	// Check if we have logs in cache for this strategy
+	logs, exists := a.logsCache[strategyID]
+	if !exists {
+		// No logs found in cache
+		a.logger.Debug().
+			Str("strategy_id", strategyID).
+			Msg("No logs found in cache for strategy")
+		return []map[string]interface{}{}, nil
+	}
+
+	// Apply limit if needed
+	if limit > 0 && len(logs) > limit {
+		// Return the most recent logs (last 'limit' entries)
+		start := len(logs) - limit
+		return logs[start:], nil
+	}
+
+	return logs, nil
 }

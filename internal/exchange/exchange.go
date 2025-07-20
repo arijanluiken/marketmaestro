@@ -32,7 +32,12 @@ type (
 	GetBalancesMsg        struct{}
 	GetPositionsMsg       struct{}
 	GetStrategiesMsg      struct{}
-	StatusMsg             struct{}
+	GetStrategyLogsMsg    struct {
+		StrategyName string
+		Symbol       string
+		Limit        int
+	}
+	StatusMsg struct{}
 
 	// Notification messages
 	PortfolioActorCreatedMsg struct {
@@ -47,6 +52,12 @@ type (
 	StrategyDataUpdateMsg struct {
 		Exchange   string
 		Strategies []map[string]interface{}
+	}
+
+	// Strategy logs message that can be sent to API
+	StrategyLogsUpdateMsg struct {
+		StrategyID string
+		Logs       []map[string]interface{}
 	}
 
 	// Portfolio data message that can be sent to API
@@ -136,6 +147,8 @@ func (e *ExchangeActor) Receive(ctx *actor.Context) {
 		e.onGetPositions(ctx)
 	case GetStrategiesMsg:
 		e.onGetStrategies(ctx)
+	case GetStrategyLogsMsg:
+		e.onGetStrategyLogs(ctx, msg)
 	case StatusMsg:
 		e.onStatus(ctx)
 	case KlineDataMsg:
@@ -662,6 +675,46 @@ func (e *ExchangeActor) onGetStrategies(ctx *actor.Context) {
 			Str("exchange", e.exchangeName).
 			Int("strategy_count", len(strategies)).
 			Msg("Sent strategy data to API actor")
+
+		// Also collect and send logs for all strategies
+		e.collectAndSendStrategyLogs(ctx)
+	}
+}
+
+func (e *ExchangeActor) onGetStrategyLogs(ctx *actor.Context, msg GetStrategyLogsMsg) {
+	// Construct strategy key
+	strategyKey := fmt.Sprintf("%s:%s", msg.StrategyName, msg.Symbol)
+
+	// Find strategy actor
+	if strategyPID, exists := e.strategyActors[strategyKey]; exists && strategyPID != nil {
+		// Request logs from strategy actor
+		response, err := ctx.Request(strategyPID, strategy.GetLogsMsg{Limit: msg.Limit}, 5*time.Second).Result()
+
+		if err != nil {
+			e.logger.Error().Err(err).
+				Str("strategy", msg.StrategyName).
+				Str("symbol", msg.Symbol).
+				Msg("Failed to get logs from strategy actor")
+			ctx.Respond(strategy.LogsResponseMsg{Logs: []strategy.StrategyLog{}})
+			return
+		}
+
+		// Forward the response
+		if logsResponse, ok := response.(strategy.LogsResponseMsg); ok {
+			ctx.Respond(logsResponse)
+		} else {
+			e.logger.Error().
+				Str("strategy", msg.StrategyName).
+				Str("symbol", msg.Symbol).
+				Msg("Invalid response type from strategy actor")
+			ctx.Respond(strategy.LogsResponseMsg{Logs: []strategy.StrategyLog{}})
+		}
+	} else {
+		e.logger.Warn().
+			Str("strategy", msg.StrategyName).
+			Str("symbol", msg.Symbol).
+			Msg("Strategy actor not found")
+		ctx.Respond(strategy.LogsResponseMsg{Logs: []strategy.StrategyLog{}})
 	}
 }
 
@@ -1034,6 +1087,55 @@ func (e *ExchangeActor) handleTriggerRebalance(ctx *actor.Context, msg map[strin
 	}
 
 	ctx.Respond(response)
+}
+
+// collectAndSendStrategyLogs collects logs from all strategy actors and sends them to API
+func (e *ExchangeActor) collectAndSendStrategyLogs(ctx *actor.Context) {
+	for strategyKey, strategyPID := range e.strategyActors {
+		if strategyPID == nil {
+			continue
+		}
+
+		// Parse strategy key to get strategy name and symbol
+		parts := strings.Split(strategyKey, ":")
+		if len(parts) != 2 {
+			continue
+		}
+
+		strategyName := parts[0]
+		symbol := parts[1]
+		strategyID := fmt.Sprintf("%s:%s:%s", e.exchangeName, symbol, strategyName)
+
+		// Request logs from strategy actor (async, don't block)
+		go func(pid *actor.PID, id string) {
+			response, err := ctx.Request(pid, strategy.GetLogsMsg{Limit: 50}, 2*time.Second).Result()
+			if err != nil {
+				e.logger.Debug().Err(err).
+					Str("strategy_id", id).
+					Msg("Failed to collect logs from strategy actor")
+				return
+			}
+
+			if logsResponse, ok := response.(strategy.LogsResponseMsg); ok {
+				// Convert strategy logs to API format
+				apiLogs := make([]map[string]interface{}, len(logsResponse.Logs))
+				for i, log := range logsResponse.Logs {
+					apiLogs[i] = map[string]interface{}{
+						"timestamp": log.Timestamp.Unix(),
+						"level":     log.Level,
+						"message":   log.Message,
+						"context":   log.Context,
+					}
+				}
+
+				// Send logs to API actor
+				ctx.Send(e.apiActorPID, StrategyLogsUpdateMsg{
+					StrategyID: id,
+					Logs:       apiLogs,
+				})
+			}
+		}(strategyPID, strategyID)
+	}
 }
 
 func (e *ExchangeActor) handleLoadRebalanceScript(ctx *actor.Context, msg map[string]interface{}) {

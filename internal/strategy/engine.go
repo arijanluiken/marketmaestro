@@ -17,10 +17,13 @@ type TechnicalIndicators struct {
 
 // StrategyEngine executes Starlark-based trading strategies
 type StrategyEngine struct {
-	logger      zerolog.Logger
-	indicators  *TechnicalIndicators
-	builtin     starlark.StringDict
-	scriptCache map[string]*starlark.Program
+	logger        zerolog.Logger
+	indicators    *TechnicalIndicators
+	builtin       starlark.StringDict
+	scriptCache   map[string]*starlark.Program
+	strategyActor interface {
+		addLog(level, message string, context map[string]interface{})
+	} // Interface to avoid circular import
 }
 
 // KlineData represents historical price data for strategies
@@ -66,6 +69,13 @@ func NewStrategyEngine(logger zerolog.Logger) *StrategyEngine {
 
 	engine.setupBuiltins()
 	return engine
+}
+
+// SetStrategyActor sets the strategy actor reference for logging
+func (se *StrategyEngine) SetStrategyActor(actor interface {
+	addLog(level, message string, context map[string]interface{})
+}) {
+	se.strategyActor = actor
 }
 
 // StrategyCallbacks represents which callbacks are available in a strategy
@@ -155,4 +165,3 @@ func (se *StrategyEngine) ValidateCallbacks(strategyName string) (*StrategyCallb
 
 	return callbacks, nil
 }
-

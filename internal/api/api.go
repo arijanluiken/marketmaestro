@@ -45,6 +45,7 @@ type APIActor struct {
 	strategiesCache map[string][]map[string]interface{} // exchange name -> strategies
 	portfolioCache  map[string]map[string]interface{}   // exchange name -> portfolio data
 	ordersCache     map[string][]map[string]interface{} // exchange name -> orders
+	logsCache       map[string][]map[string]interface{} // strategy ID -> logs
 	db              *sql.DB                             // database connection
 }
 
@@ -58,6 +59,7 @@ func New(cfg *config.Config, logger zerolog.Logger) *APIActor {
 		strategiesCache: make(map[string][]map[string]interface{}),
 		portfolioCache:  make(map[string]map[string]interface{}),
 		ordersCache:     make(map[string][]map[string]interface{}),
+		logsCache:       make(map[string][]map[string]interface{}),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				// Allow all origins for development
@@ -96,6 +98,8 @@ func (a *APIActor) Receive(ctx *actor.Context) {
 		a.onSetExchangeActor(ctx, msg)
 	case exchange.StrategyDataUpdateMsg:
 		a.onStrategyDataUpdate(ctx, msg)
+	case exchange.StrategyLogsUpdateMsg:
+		a.onStrategyLogsUpdate(ctx, msg)
 	case exchange.PortfolioDataUpdateMsg:
 		a.onPortfolioDataUpdate(ctx, msg)
 	case exchange.OrdersDataUpdateMsg:
@@ -201,6 +205,14 @@ func (a *APIActor) onStrategyDataUpdate(ctx *actor.Context, msg exchange.Strateg
 		Str("exchange", msg.Exchange).
 		Int("strategy_count", len(msg.Strategies)).
 		Msg("Strategy data cache updated")
+}
+
+func (a *APIActor) onStrategyLogsUpdate(ctx *actor.Context, msg exchange.StrategyLogsUpdateMsg) {
+	a.logsCache[msg.StrategyID] = msg.Logs
+	a.logger.Debug().
+		Str("strategy_id", msg.StrategyID).
+		Int("log_count", len(msg.Logs)).
+		Msg("Strategy logs cache updated")
 }
 
 func (a *APIActor) onPortfolioDataUpdate(ctx *actor.Context, msg exchange.PortfolioDataUpdateMsg) {

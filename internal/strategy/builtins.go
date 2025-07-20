@@ -119,25 +119,25 @@ func (se *StrategyEngine) setupBuiltins() {
 		"awesome_oscillator":     starlark.NewBuiltin("awesome_oscillator", se.awesomeOscillator),
 		"accelerator_oscillator": starlark.NewBuiltin("accelerator_oscillator", se.acceleratorOscillator),
 		// New Extended Indicators
-		"hull_ma":              starlark.NewBuiltin("hull_ma", se.hullMA),
-		"wma":                  starlark.NewBuiltin("wma", se.wma),
-		"chandelier_exit":      starlark.NewBuiltin("chandelier_exit", se.chandelierExit),
-		"alma":                 starlark.NewBuiltin("alma", se.alma),
-		"cmo":                  starlark.NewBuiltin("cmo", se.cmo),
-		"tema":                 starlark.NewBuiltin("tema", se.tema),
-		"emv":                  starlark.NewBuiltin("emv", se.emv),
-		"force_index":          starlark.NewBuiltin("force_index", se.forceIndex),
-		"bop":                  starlark.NewBuiltin("bop", se.bop),
-		"price_channel":        starlark.NewBuiltin("price_channel", se.priceChannel),
-		"mass_index":           starlark.NewBuiltin("mass_index", se.massIndex),
-		"volume_oscillator":    starlark.NewBuiltin("volume_oscillator", se.volumeOscillator),
-		"kst":                  starlark.NewBuiltin("kst", se.kst),
-		"stc":                  starlark.NewBuiltin("stc", se.stc),
-		"coppock_curve":        starlark.NewBuiltin("coppock_curve", se.coppockCurve),
-		"chande_kroll_stop":    starlark.NewBuiltin("chande_kroll_stop", se.chandeKrollStop),
-		"elder_force_index":    starlark.NewBuiltin("elder_force_index", se.elderForceIndex),
-		"klinger_oscillator":   starlark.NewBuiltin("klinger_oscillator", se.klingerOscillator),
-		"volume_profile":       starlark.NewBuiltin("volume_profile", se.volumeProfile),
+		"hull_ma":            starlark.NewBuiltin("hull_ma", se.hullMA),
+		"wma":                starlark.NewBuiltin("wma", se.wma),
+		"chandelier_exit":    starlark.NewBuiltin("chandelier_exit", se.chandelierExit),
+		"alma":               starlark.NewBuiltin("alma", se.alma),
+		"cmo":                starlark.NewBuiltin("cmo", se.cmo),
+		"tema":               starlark.NewBuiltin("tema", se.tema),
+		"emv":                starlark.NewBuiltin("emv", se.emv),
+		"force_index":        starlark.NewBuiltin("force_index", se.forceIndex),
+		"bop":                starlark.NewBuiltin("bop", se.bop),
+		"price_channel":      starlark.NewBuiltin("price_channel", se.priceChannel),
+		"mass_index":         starlark.NewBuiltin("mass_index", se.massIndex),
+		"volume_oscillator":  starlark.NewBuiltin("volume_oscillator", se.volumeOscillator),
+		"kst":                starlark.NewBuiltin("kst", se.kst),
+		"stc":                starlark.NewBuiltin("stc", se.stc),
+		"coppock_curve":      starlark.NewBuiltin("coppock_curve", se.coppockCurve),
+		"chande_kroll_stop":  starlark.NewBuiltin("chande_kroll_stop", se.chandeKrollStop),
+		"elder_force_index":  starlark.NewBuiltin("elder_force_index", se.elderForceIndex),
+		"klinger_oscillator": starlark.NewBuiltin("klinger_oscillator", se.klingerOscillator),
+		"volume_profile":     starlark.NewBuiltin("volume_profile", se.volumeProfile),
 		// Utility functions
 		"highest":    starlark.NewBuiltin("highest", se.highest),
 		"lowest":     starlark.NewBuiltin("lowest", se.lowest),
@@ -922,7 +922,14 @@ func (se *StrategyEngine) logFunc(thread *starlark.Thread, fn *starlark.Builtin,
 		return nil, err
 	}
 
-	se.logger.Info().Str("source", "strategy").Msg(string(msg))
+	message := string(msg)
+	se.logger.Info().Str("source", "strategy").Msg(message)
+
+	// Also add to strategy logs if we have a strategy actor reference
+	if se.strategyActor != nil {
+		se.strategyActor.addLog("info", message, nil)
+	}
+
 	return starlark.None, nil
 }
 
@@ -933,7 +940,14 @@ func (se *StrategyEngine) printFunc(thread *starlark.Thread, fn *starlark.Builti
 		return nil, err
 	}
 
-	se.logger.Debug().Str("source", "strategy").Msg(string(msg))
+	message := string(msg)
+	se.logger.Debug().Str("source", "strategy").Msg(message)
+
+	// Also add to strategy logs if we have a strategy actor reference
+	if se.strategyActor != nil {
+		se.strategyActor.addLog("debug", message, nil)
+	}
+
 	return starlark.None, nil
 }
 

@@ -21,7 +21,17 @@ type (
 	TickerDataMsg      struct{ Ticker *exchanges.Ticker }
 	StatusMsg          struct{}
 	ExecuteStrategyMsg struct{}
+	GetLogsMsg         struct{ Limit int }
+	LogsResponseMsg    struct{ Logs []StrategyLog }
 )
+
+// StrategyLog represents a log entry from strategy execution
+type StrategyLog struct {
+	Timestamp time.Time              `json:"timestamp"`
+	Level     string                 `json:"level"`
+	Message   string                 `json:"message"`
+	Context   map[string]interface{} `json:"context,omitempty"`
+}
 
 // StrategyActor executes trading strategies using Starlark
 type StrategyActor struct {
@@ -44,6 +54,10 @@ type StrategyActor struct {
 	// Parent actor references
 	orderManagerPID *actor.PID
 	riskManagerPID  *actor.PID
+
+	// Log storage (in-memory circular buffer)
+	logs    []StrategyLog
+	maxLogs int
 }
 
 // New creates a new strategy actor
@@ -58,6 +72,8 @@ func New(strategyName, symbol, exchangeName string, strategyConfig map[string]in
 		logger:       logger,
 		engine:       NewStrategyEngine(logger),
 		klineBuffer:  make([]*KlineData, 0, 100), // Keep last 100 klines
+		logs:         make([]StrategyLog, 0),     // Initialize logs slice
+		maxLogs:      100,                        // Keep last 100 log entries
 	}
 }
 
@@ -90,6 +106,8 @@ func (s *StrategyActor) Receive(ctx *actor.Context) {
 		s.onExecuteStrategy(ctx)
 	case StatusMsg:
 		s.onStatus(ctx)
+	case GetLogsMsg:
+		s.onGetLogs(ctx, msg)
 	default:
 		// Reduced chattiness - only log unknown message types occasionally
 		s.logger.Info().
@@ -103,6 +121,9 @@ func (s *StrategyActor) onStarted(ctx *actor.Context) {
 		Str("strategy", s.strategyName).
 		Str("symbol", s.symbol).
 		Msg("Strategy actor started")
+
+	// Set strategy actor reference in engine for logging
+	s.engine.SetStrategyActor(s)
 
 	// Auto-start the strategy
 	ctx.Send(ctx.PID(), StartStrategyMsg{})
@@ -137,6 +158,7 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 	callbacks, err := s.engine.ValidateCallbacks(s.strategyName)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("Failed to validate strategy callbacks")
+		s.addLog("error", fmt.Sprintf("Failed to validate strategy callbacks: %v", err), nil)
 		return
 	}
 	s.callbacks = callbacks
@@ -154,6 +176,7 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 	interval, err := s.engine.GetStrategyInterval(s.strategyName)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("Failed to get strategy interval, using default")
+		s.addLog("warning", fmt.Sprintf("Failed to get strategy interval, using default: %v", err), nil)
 		interval = "1m" // Default fallback
 	}
 	s.interval = interval
@@ -165,6 +188,11 @@ func (s *StrategyActor) onStartStrategy(ctx *actor.Context) {
 		Msg("Strategy interval extracted from script")
 
 	s.running = true
+	s.addLog("info", fmt.Sprintf("Strategy %s started for %s", s.strategyName, s.symbol), map[string]interface{}{
+		"strategy": s.strategyName,
+		"symbol":   s.symbol,
+		"interval": s.interval,
+	})
 
 	// Call on_start callback if available
 	if callbacks.HasOnStart {
@@ -192,6 +220,11 @@ func (s *StrategyActor) onStopStrategy(ctx *actor.Context) {
 		Str("symbol", s.symbol).
 		Msg("Stopping strategy execution")
 
+	s.addLog("info", fmt.Sprintf("Strategy %s stopped for %s", s.strategyName, s.symbol), map[string]interface{}{
+		"strategy": s.strategyName,
+		"symbol":   s.symbol,
+	})
+
 	// Call on_stop callback if available
 	if s.callbacks != nil && s.callbacks.HasOnStop {
 		strategyCtx := &StrategyContext{
@@ -205,6 +238,7 @@ func (s *StrategyActor) onStopStrategy(ctx *actor.Context) {
 		err := s.engine.ExecuteStopCallback(s.strategyName, strategyCtx)
 		if err != nil {
 			s.logger.Error().Err(err).Msg("Failed to execute on_stop callback")
+			s.addLog("error", fmt.Sprintf("Failed to execute on_stop callback: %v", err), nil)
 		}
 	}
 
@@ -344,6 +378,7 @@ func (s *StrategyActor) onExecuteStrategy(ctx *actor.Context) {
 	signal, err := s.engine.ExecuteStrategy(s.strategyName, strategyCtx)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("Strategy execution failed")
+		s.addLog("error", fmt.Sprintf("Strategy execution failed: %v", err), nil)
 		return
 	}
 
@@ -355,6 +390,13 @@ func (s *StrategyActor) onExecuteStrategy(ctx *actor.Context) {
 			Float64("price", signal.Price).
 			Str("reason", signal.Reason).
 			Msg("Strategy generated signal")
+
+		s.addLog("info", fmt.Sprintf("Generated %s signal", signal.Action), map[string]interface{}{
+			"action":   signal.Action,
+			"quantity": signal.Quantity,
+			"price":    signal.Price,
+			"reason":   signal.Reason,
+		})
 
 		// Send order to order manager (if we have reference)
 		if s.orderManagerPID != nil {
@@ -543,5 +585,43 @@ func (s *StrategyActor) processStrategySignal(ctx *actor.Context, signal *Strate
 			}
 			ctx.Send(s.riskManagerPID, riskCheck)
 		}
+	}
+}
+
+// onGetLogs handles requests for strategy logs
+func (s *StrategyActor) onGetLogs(ctx *actor.Context, msg GetLogsMsg) {
+	limit := msg.Limit
+	if limit <= 0 || limit > len(s.logs) {
+		limit = len(s.logs)
+	}
+
+	// Return the most recent logs (last 'limit' entries)
+	start := len(s.logs) - limit
+	if start < 0 {
+		start = 0
+	}
+
+	logs := make([]StrategyLog, limit)
+	copy(logs, s.logs[start:])
+
+	ctx.Respond(LogsResponseMsg{Logs: logs})
+}
+
+// addLog adds a log entry to the strategy's log buffer
+func (s *StrategyActor) addLog(level, message string, context map[string]interface{}) {
+	log := StrategyLog{
+		Timestamp: time.Now(),
+		Level:     level,
+		Message:   message,
+		Context:   context,
+	}
+
+	// Add to logs slice
+	s.logs = append(s.logs, log)
+
+	// Maintain circular buffer by removing old entries
+	if len(s.logs) > s.maxLogs {
+		// Keep the most recent maxLogs entries
+		s.logs = s.logs[len(s.logs)-s.maxLogs:]
 	}
 }

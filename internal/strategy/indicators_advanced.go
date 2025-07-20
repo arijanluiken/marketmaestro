@@ -729,3 +729,938 @@ func (ti *TechnicalIndicators) calculateAcceleratorOscillator(high, low, close *
 
 	return result
 }
+
+// calculateHullMA calculates Hull Moving Average
+func (ti *TechnicalIndicators) calculateHullMA(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	halfPeriod := period / 2
+	sqrtPeriod := int(math.Sqrt(float64(period)))
+
+	// Calculate WMA for half period
+	wmaHalf := ti.calculateWMA(prices, halfPeriod)
+	
+	// Calculate WMA for full period
+	wmaFull := ti.calculateWMA(prices, period)
+
+	// Calculate 2*WMA(n/2) - WMA(n)
+	diffValues := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(wmaHalf[i]) || math.IsNaN(wmaFull[i]) {
+			diffValues[i] = math.NaN()
+		} else {
+			diffValues[i] = 2*wmaHalf[i] - wmaFull[i]
+		}
+	}
+
+	// Convert to starlark list for final WMA calculation
+	diffList := starlark.NewList(nil)
+	for _, val := range diffValues {
+		if !math.IsNaN(val) {
+			diffList.Append(starlark.Float(val))
+		} else {
+			diffList.Append(starlark.None)
+		}
+	}
+
+	// Calculate WMA of sqrt(period) on the difference
+	return ti.calculateWMA(diffList, sqrtPeriod)
+}
+
+// calculateWMA calculates Weighted Moving Average
+func (ti *TechnicalIndicators) calculateWMA(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+	weightSum := float64(period * (period + 1) / 2)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		weightedSum := 0.0
+		for j := 0; j < period; j++ {
+			price, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+			weight := float64(j + 1)
+			weightedSum += price * weight
+		}
+		result[i] = weightedSum / weightSum
+	}
+
+	return result
+}
+
+// calculateChandelierExit calculates Chandelier Exit indicator
+func (ti *TechnicalIndicators) calculateChandelierExit(high, low, close *starlark.List, period int, multiplier float64) ([]float64, []float64) {
+	length := close.Len()
+	if length < period {
+		return nil, nil
+	}
+
+	atr := ti.calculateATR(high, low, close, period)
+	longExit := make([]float64, length)
+	shortExit := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			longExit[i] = math.NaN()
+			shortExit[i] = math.NaN()
+			continue
+		}
+
+		// Find highest high and lowest low over period
+		highestHigh := math.Inf(-1)
+		lowestLow := math.Inf(1)
+
+		for j := i - period + 1; j <= i; j++ {
+			h, _ := starlark.AsFloat(high.Index(j))
+			l, _ := starlark.AsFloat(low.Index(j))
+
+			if h > highestHigh {
+				highestHigh = h
+			}
+			if l < lowestLow {
+				lowestLow = l
+			}
+		}
+
+		if !math.IsNaN(atr[i]) {
+			longExit[i] = highestHigh - (multiplier * atr[i])
+			shortExit[i] = lowestLow + (multiplier * atr[i])
+		} else {
+			longExit[i] = math.NaN()
+			shortExit[i] = math.NaN()
+		}
+	}
+
+	return longExit, shortExit
+}
+
+// calculateALMA calculates Arnaud Legoux Moving Average
+func (ti *TechnicalIndicators) calculateALMA(prices *starlark.List, period int, offset float64, sigma float64) []float64 {
+	length := prices.Len()
+	if length < period {
+		return nil
+	}
+
+	result := make([]float64, length)
+	m := offset * float64(period-1)
+	s := float64(period) / sigma
+
+	// Pre-calculate weights
+	weights := make([]float64, period)
+	weightSum := 0.0
+	for i := 0; i < period; i++ {
+		weight := math.Exp(-math.Pow(float64(i)-m, 2)/(2*s*s))
+		weights[i] = weight
+		weightSum += weight
+	}
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		weightedSum := 0.0
+		for j := 0; j < period; j++ {
+			price, _ := starlark.AsFloat(prices.Index(i - period + 1 + j))
+			weightedSum += price * weights[j]
+		}
+		result[i] = weightedSum / weightSum
+	}
+
+	return result
+}
+
+// calculateCMO calculates Chande Momentum Oscillator
+func (ti *TechnicalIndicators) calculateCMO(prices *starlark.List, period int) []float64 {
+	length := prices.Len()
+	if length < period+1 {
+		return nil
+	}
+
+	result := make([]float64, length)
+	gains := make([]float64, length)
+	losses := make([]float64, length)
+
+	// Calculate price changes
+	for i := 1; i < length; i++ {
+		current, _ := starlark.AsFloat(prices.Index(i))
+		previous, _ := starlark.AsFloat(prices.Index(i-1))
+		change := current - previous
+
+		if change > 0 {
+			gains[i] = change
+			losses[i] = 0
+		} else {
+			gains[i] = 0
+			losses[i] = -change
+		}
+	}
+
+	// Calculate CMO
+	for i := period; i < length; i++ {
+		sumGains := 0.0
+		sumLosses := 0.0
+
+		for j := i - period + 1; j <= i; j++ {
+			sumGains += gains[j]
+			sumLosses += losses[j]
+		}
+
+		if sumGains+sumLosses == 0 {
+			result[i] = 0
+		} else {
+			result[i] = 100 * (sumGains - sumLosses) / (sumGains + sumLosses)
+		}
+	}
+
+	// Fill initial values with NaN
+	for i := 0; i < period; i++ {
+		result[i] = math.NaN()
+	}
+
+	return result
+}
+
+// calculateTEMA calculates Triple Exponential Moving Average
+func (ti *TechnicalIndicators) calculateTEMA(prices *starlark.List, period int) []float64 {
+	// First EMA
+	ema1 := ti.calculateEMA(prices, period)
+	
+	// Convert to starlark list for second EMA
+	ema1List := starlark.NewList(nil)
+	for _, val := range ema1 {
+		if !math.IsNaN(val) {
+			ema1List.Append(starlark.Float(val))
+		} else {
+			ema1List.Append(starlark.None)
+		}
+	}
+
+	// Second EMA
+	ema2 := ti.calculateEMA(ema1List, period)
+
+	// Convert to starlark list for third EMA
+	ema2List := starlark.NewList(nil)
+	for _, val := range ema2 {
+		if !math.IsNaN(val) {
+			ema2List.Append(starlark.Float(val))
+		} else {
+			ema2List.Append(starlark.None)
+		}
+	}
+
+	// Third EMA
+	ema3 := ti.calculateEMA(ema2List, period)
+
+	// Calculate TEMA: 3*EMA1 - 3*EMA2 + EMA3
+	length := len(ema1)
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if math.IsNaN(ema1[i]) || math.IsNaN(ema2[i]) || math.IsNaN(ema3[i]) {
+			result[i] = math.NaN()
+		} else {
+			result[i] = 3*ema1[i] - 3*ema2[i] + ema3[i]
+		}
+	}
+
+	return result
+}
+
+// calculateEMV calculates Ease of Movement
+func (ti *TechnicalIndicators) calculateEMV(high, low, close, volume *starlark.List, period int) []float64 {
+	length := close.Len()
+	if length < 2 {
+		return nil
+	}
+
+	emvRaw := make([]float64, length)
+	emvRaw[0] = 0
+
+	for i := 1; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+		
+		prevH, _ := starlark.AsFloat(high.Index(i-1))
+		prevL, _ := starlark.AsFloat(low.Index(i-1))
+
+		// Distance moved
+		dm := ((h + l) / 2) - ((prevH + prevL) / 2)
+		
+		// Box height (high - low)
+		boxHeight := h - l
+		
+		// Scale factor
+		if boxHeight != 0 && v != 0 {
+			scaleFactor := v / (100000000 * boxHeight) // Scale down volume
+			emvRaw[i] = dm / scaleFactor
+		} else {
+			emvRaw[i] = 0
+		}
+	}
+
+	// Apply moving average smoothing
+	emvList := starlark.NewList(nil)
+	for _, val := range emvRaw {
+		emvList.Append(starlark.Float(val))
+	}
+
+	return ti.calculateSMA(emvList, period)
+}
+
+// calculateForceIndex calculates Force Index
+func (ti *TechnicalIndicators) calculateForceIndex(close, volume *starlark.List, period int) []float64 {
+	length := close.Len()
+	if length < 2 {
+		return nil
+	}
+
+	fi := make([]float64, length)
+	fi[0] = 0
+
+	for i := 1; i < length; i++ {
+		c, _ := starlark.AsFloat(close.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+		prevC, _ := starlark.AsFloat(close.Index(i-1))
+
+		fi[i] = (c - prevC) * v
+	}
+
+	// Apply EMA smoothing
+	fiList := starlark.NewList(nil)
+	for _, val := range fi {
+		fiList.Append(starlark.Float(val))
+	}
+
+	return ti.calculateEMA(fiList, period)
+}
+
+// calculateBOP calculates Balance of Power
+func (ti *TechnicalIndicators) calculateBOP(open, high, low, close *starlark.List) []float64 {
+	length := close.Len()
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		o, _ := starlark.AsFloat(open.Index(i))
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		c, _ := starlark.AsFloat(close.Index(i))
+
+		if h != l {
+			result[i] = (c - o) / (h - l)
+		} else {
+			result[i] = 0
+		}
+	}
+
+	return result
+}
+
+// calculatePriceChannel calculates Price Channel
+func (ti *TechnicalIndicators) calculatePriceChannel(high, low *starlark.List, period int) ([]float64, []float64, []float64) {
+	length := high.Len()
+	if length < period {
+		return nil, nil, nil
+	}
+
+	upper := make([]float64, length)
+	lower := make([]float64, length)
+	middle := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			upper[i] = math.NaN()
+			lower[i] = math.NaN()
+			middle[i] = math.NaN()
+			continue
+		}
+
+		highestHigh := math.Inf(-1)
+		lowestLow := math.Inf(1)
+
+		for j := i - period + 1; j <= i; j++ {
+			h, _ := starlark.AsFloat(high.Index(j))
+			l, _ := starlark.AsFloat(low.Index(j))
+
+			if h > highestHigh {
+				highestHigh = h
+			}
+			if l < lowestLow {
+				lowestLow = l
+			}
+		}
+
+		upper[i] = highestHigh
+		lower[i] = lowestLow
+		middle[i] = (highestHigh + lowestLow) / 2
+	}
+
+	return upper, middle, lower
+}
+
+// calculateMassIndex calculates Mass Index
+func (ti *TechnicalIndicators) calculateMassIndex(high, low *starlark.List, period int, sumPeriod int) []float64 {
+	length := high.Len()
+	if length < period {
+		return nil
+	}
+
+	// Calculate high-low range
+	ranges := make([]float64, length)
+	for i := 0; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		ranges[i] = h - l
+	}
+
+	// Convert to starlark list for EMA calculation
+	rangeList := starlark.NewList(nil)
+	for _, val := range ranges {
+		rangeList.Append(starlark.Float(val))
+	}
+
+	// Calculate 9-period EMA of range
+	ema1 := ti.calculateEMA(rangeList, period)
+
+	// Convert first EMA to starlark list
+	ema1List := starlark.NewList(nil)
+	for _, val := range ema1 {
+		if !math.IsNaN(val) {
+			ema1List.Append(starlark.Float(val))
+		} else {
+			ema1List.Append(starlark.None)
+		}
+	}
+
+	// Calculate 9-period EMA of the first EMA
+	ema2 := ti.calculateEMA(ema1List, period)
+
+	// Calculate ratio and sum over sumPeriod
+	result := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < sumPeriod-1 {
+			result[i] = math.NaN()
+			continue
+		}
+
+		sum := 0.0
+		validCount := 0
+
+		for j := i - sumPeriod + 1; j <= i; j++ {
+			if !math.IsNaN(ema1[j]) && !math.IsNaN(ema2[j]) && ema2[j] != 0 {
+				sum += ema1[j] / ema2[j]
+				validCount++
+			}
+		}
+
+		if validCount > 0 {
+			result[i] = sum
+		} else {
+			result[i] = math.NaN()
+		}
+	}
+
+	return result
+}
+
+// calculateVolumeOscillator calculates Volume Oscillator
+func (ti *TechnicalIndicators) calculateVolumeOscillator(volume *starlark.List, fastPeriod, slowPeriod int) []float64 {
+	length := volume.Len()
+	if length < slowPeriod {
+		return nil
+	}
+
+	fastMA := ti.calculateSMA(volume, fastPeriod)
+	slowMA := ti.calculateSMA(volume, slowPeriod)
+
+	result := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(fastMA[i]) || math.IsNaN(slowMA[i]) || slowMA[i] == 0 {
+			result[i] = math.NaN()
+		} else {
+			result[i] = ((fastMA[i] - slowMA[i]) / slowMA[i]) * 100
+		}
+	}
+
+	return result
+}
+
+// calculateKST calculates Know Sure Thing oscillator
+func (ti *TechnicalIndicators) calculateKST(prices *starlark.List, rocPeriod1, rocPeriod2, rocPeriod3, rocPeriod4, smaPeriod1, smaPeriod2, smaPeriod3, smaPeriod4 int) ([]float64, []float64) {
+	length := prices.Len()
+	
+	// Calculate Rate of Change for different periods
+	roc1 := ti.calculateROC(prices, rocPeriod1)
+	roc2 := ti.calculateROC(prices, rocPeriod2)
+	roc3 := ti.calculateROC(prices, rocPeriod3)
+	roc4 := ti.calculateROC(prices, rocPeriod4)
+
+	// Convert ROCs to starlark lists for SMA calculation
+	roc1List := starlark.NewList(nil)
+	for _, val := range roc1 {
+		if !math.IsNaN(val) {
+			roc1List.Append(starlark.Float(val))
+		} else {
+			roc1List.Append(starlark.None)
+		}
+	}
+
+	roc2List := starlark.NewList(nil)
+	for _, val := range roc2 {
+		if !math.IsNaN(val) {
+			roc2List.Append(starlark.Float(val))
+		} else {
+			roc2List.Append(starlark.None)
+		}
+	}
+
+	roc3List := starlark.NewList(nil)
+	for _, val := range roc3 {
+		if !math.IsNaN(val) {
+			roc3List.Append(starlark.Float(val))
+		} else {
+			roc3List.Append(starlark.None)
+		}
+	}
+
+	roc4List := starlark.NewList(nil)
+	for _, val := range roc4 {
+		if !math.IsNaN(val) {
+			roc4List.Append(starlark.Float(val))
+		} else {
+			roc4List.Append(starlark.None)
+		}
+	}
+
+	// Calculate SMAs of ROCs
+	smaRoc1 := ti.calculateSMA(roc1List, smaPeriod1)
+	smaRoc2 := ti.calculateSMA(roc2List, smaPeriod2)
+	smaRoc3 := ti.calculateSMA(roc3List, smaPeriod3)
+	smaRoc4 := ti.calculateSMA(roc4List, smaPeriod4)
+
+	// Calculate KST line
+	kst := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(smaRoc1[i]) || math.IsNaN(smaRoc2[i]) || math.IsNaN(smaRoc3[i]) || math.IsNaN(smaRoc4[i]) {
+			kst[i] = math.NaN()
+		} else {
+			kst[i] = 1*smaRoc1[i] + 2*smaRoc2[i] + 3*smaRoc3[i] + 4*smaRoc4[i]
+		}
+	}
+
+	// Calculate signal line (SMA of KST)
+	kstList := starlark.NewList(nil)
+	for _, val := range kst {
+		if !math.IsNaN(val) {
+			kstList.Append(starlark.Float(val))
+		} else {
+			kstList.Append(starlark.None)
+		}
+	}
+
+	signal := ti.calculateSMA(kstList, 9) // Standard 9-period signal line
+
+	return kst, signal
+}
+
+// calculateSTC calculates Schaff Trend Cycle
+func (ti *TechnicalIndicators) calculateSTC(prices *starlark.List, fastPeriod, slowPeriod, cyclePeriod int, factor float64) []float64 {
+	length := prices.Len()
+	if length < slowPeriod {
+		// Return array of NaN values instead of nil
+		result := make([]float64, length)
+		for i := range result {
+			result[i] = math.NaN()
+		}
+		return result
+	}
+
+	// Calculate MACD
+	macdLine, _, _ := ti.calculateMACD(prices, fastPeriod, slowPeriod, 9)
+
+	// Calculate Stochastic of MACD
+	stoch1 := make([]float64, length)
+	for i := cyclePeriod - 1; i < length; i++ {
+		if math.IsNaN(macdLine[i]) {
+			stoch1[i] = math.NaN()
+			continue
+		}
+
+		var minMACD, maxMACD float64 = math.MaxFloat64, -math.MaxFloat64
+		for j := i - cyclePeriod + 1; j <= i; j++ {
+			if !math.IsNaN(macdLine[j]) {
+				if macdLine[j] < minMACD {
+					minMACD = macdLine[j]
+				}
+				if macdLine[j] > maxMACD {
+					maxMACD = macdLine[j]
+				}
+			}
+		}
+
+		if maxMACD != minMACD {
+			stoch1[i] = 100 * (macdLine[i] - minMACD) / (maxMACD - minMACD)
+		} else {
+			stoch1[i] = 50
+		}
+	}
+
+	// Smooth first stochastic
+	smoothed1 := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if i == 0 || math.IsNaN(stoch1[i]) {
+			smoothed1[i] = stoch1[i]
+		} else {
+			if math.IsNaN(smoothed1[i-1]) {
+				smoothed1[i] = stoch1[i]
+			} else {
+				smoothed1[i] = smoothed1[i-1] + factor*(stoch1[i]-smoothed1[i-1])
+			}
+		}
+	}
+
+	// Calculate second stochastic
+	stoch2 := make([]float64, length)
+	for i := cyclePeriod - 1; i < length; i++ {
+		if math.IsNaN(smoothed1[i]) {
+			stoch2[i] = math.NaN()
+			continue
+		}
+
+		var minSmooth, maxSmooth float64 = math.MaxFloat64, -math.MaxFloat64
+		for j := i - cyclePeriod + 1; j <= i; j++ {
+			if !math.IsNaN(smoothed1[j]) {
+				if smoothed1[j] < minSmooth {
+					minSmooth = smoothed1[j]
+				}
+				if smoothed1[j] > maxSmooth {
+					maxSmooth = smoothed1[j]
+				}
+			}
+		}
+
+		if maxSmooth != minSmooth {
+			stoch2[i] = 100 * (smoothed1[i] - minSmooth) / (maxSmooth - minSmooth)
+		} else {
+			stoch2[i] = 50
+		}
+	}
+
+	// Final smoothing
+	result := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if i == 0 || math.IsNaN(stoch2[i]) {
+			result[i] = stoch2[i]
+		} else {
+			if math.IsNaN(result[i-1]) {
+				result[i] = stoch2[i]
+			} else {
+				result[i] = result[i-1] + factor*(stoch2[i]-result[i-1])
+			}
+		}
+	}
+
+	// Fill early values with NaN
+	for i := 0; i < cyclePeriod-1; i++ {
+		result[i] = math.NaN()
+	}
+
+	return result
+}
+
+// calculateCoppockCurve calculates Coppock Curve
+func (ti *TechnicalIndicators) calculateCoppockCurve(prices *starlark.List, roc1Period, roc2Period, wmaPeriod int) []float64 {
+	length := prices.Len()
+	
+	// Calculate Rate of Change for both periods
+	roc1 := ti.calculateROC(prices, roc1Period)
+	roc2 := ti.calculateROC(prices, roc2Period)
+
+	// Sum the ROCs
+	rocSum := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(roc1[i]) || math.IsNaN(roc2[i]) {
+			rocSum[i] = math.NaN()
+		} else {
+			rocSum[i] = roc1[i] + roc2[i]
+		}
+	}
+
+	// Convert to starlark list for WMA calculation
+	rocSumList := starlark.NewList(nil)
+	for _, val := range rocSum {
+		if !math.IsNaN(val) {
+			rocSumList.Append(starlark.Float(val))
+		} else {
+			rocSumList.Append(starlark.None)
+		}
+	}
+
+	// Apply Weighted Moving Average
+	return ti.calculateWMA(rocSumList, wmaPeriod)
+}
+
+// calculateChandeKrollStop calculates Chande Kroll Stop
+func (ti *TechnicalIndicators) calculateChandeKrollStop(high, low, close *starlark.List, period int, multiplier float64) ([]float64, []float64) {
+	length := close.Len()
+	if length < period {
+		return nil, nil
+	}
+
+	atr := ti.calculateATR(high, low, close, period)
+	longStop := make([]float64, length)
+	shortStop := make([]float64, length)
+
+	for i := 0; i < length; i++ {
+		if i < period-1 {
+			longStop[i] = math.NaN()
+			shortStop[i] = math.NaN()
+			continue
+		}
+
+		// Find highest high and lowest low over period
+		highestHigh := math.Inf(-1)
+		lowestLow := math.Inf(1)
+
+		for j := i - period + 1; j <= i; j++ {
+			h, _ := starlark.AsFloat(high.Index(j))
+			l, _ := starlark.AsFloat(low.Index(j))
+
+			if h > highestHigh {
+				highestHigh = h
+			}
+			if l < lowestLow {
+				lowestLow = l
+			}
+		}
+
+		if !math.IsNaN(atr[i]) {
+			longStop[i] = highestHigh - (multiplier * atr[i])
+			shortStop[i] = lowestLow + (multiplier * atr[i])
+		} else {
+			longStop[i] = math.NaN()
+			shortStop[i] = math.NaN()
+		}
+	}
+
+	return longStop, shortStop
+}
+
+// calculateElderForceIndex calculates Elder's Force Index (enhanced version)
+func (ti *TechnicalIndicators) calculateElderForceIndex(close, volume *starlark.List, shortPeriod, longPeriod int) ([]float64, []float64) {
+	// Calculate raw Force Index
+	length := close.Len()
+	if length < 2 {
+		return nil, nil
+	}
+
+	rawFI := make([]float64, length)
+	rawFI[0] = 0
+
+	for i := 1; i < length; i++ {
+		c, _ := starlark.AsFloat(close.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+		prevC, _ := starlark.AsFloat(close.Index(i-1))
+
+		rawFI[i] = (c - prevC) * v
+	}
+
+	// Convert to starlark list
+	rawFIList := starlark.NewList(nil)
+	for _, val := range rawFI {
+		rawFIList.Append(starlark.Float(val))
+	}
+
+	// Calculate short and long period EMAs
+	shortFI := ti.calculateEMA(rawFIList, shortPeriod)
+	longFI := ti.calculateEMA(rawFIList, longPeriod)
+
+	return shortFI, longFI
+}
+
+// calculateKlingerOscillator calculates Klinger Volume Oscillator
+func (ti *TechnicalIndicators) calculateKlingerOscillator(high, low, close, volume *starlark.List, fastPeriod, slowPeriod, signalPeriod int) ([]float64, []float64) {
+	length := close.Len()
+	if length < 2 {
+		return nil, nil
+	}
+
+	// Calculate trend and volume force
+	vf := make([]float64, length)
+	vf[0] = 0
+
+	for i := 1; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		c, _ := starlark.AsFloat(close.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+		
+		prevH, _ := starlark.AsFloat(high.Index(i-1))
+		prevL, _ := starlark.AsFloat(low.Index(i-1))
+		prevC, _ := starlark.AsFloat(close.Index(i-1))
+
+		// Typical price and previous typical price
+		tp := (h + l + c) / 3
+		prevTP := (prevH + prevL + prevC) / 3
+
+		// Determine trend
+		var trend int
+		if tp > prevTP {
+			trend = 1
+		} else {
+			trend = -1
+		}
+
+		// Calculate volume force
+		if i == 1 {
+			vf[i] = float64(trend) * v
+		} else {
+			// Check if trend changed
+			prevTrend := 1
+			if i >= 2 {
+				prevPrevH, _ := starlark.AsFloat(high.Index(i-2))
+				prevPrevL, _ := starlark.AsFloat(low.Index(i-2))
+				prevPrevC, _ := starlark.AsFloat(close.Index(i-2))
+				prevPrevTP := (prevPrevH + prevPrevL + prevPrevC) / 3
+				
+				if prevTP <= prevPrevTP {
+					prevTrend = -1
+				}
+			}
+
+			if trend == prevTrend {
+				vf[i] = vf[i-1] + float64(trend)*v
+			} else {
+				vf[i] = float64(trend) * v
+			}
+		}
+	}
+
+	// Convert to starlark list for EMA calculation
+	vfList := starlark.NewList(nil)
+	for _, val := range vf {
+		vfList.Append(starlark.Float(val))
+	}
+
+	// Calculate fast and slow EMAs
+	fastEMA := ti.calculateEMA(vfList, fastPeriod)
+	slowEMA := ti.calculateEMA(vfList, slowPeriod)
+
+	// Calculate Klinger Oscillator
+	ko := make([]float64, length)
+	for i := 0; i < length; i++ {
+		if math.IsNaN(fastEMA[i]) || math.IsNaN(slowEMA[i]) {
+			ko[i] = math.NaN()
+		} else {
+			ko[i] = fastEMA[i] - slowEMA[i]
+		}
+	}
+
+	// Calculate signal line
+	koList := starlark.NewList(nil)
+	for _, val := range ko {
+		if !math.IsNaN(val) {
+			koList.Append(starlark.Float(val))
+		} else {
+			koList.Append(starlark.None)
+		}
+	}
+
+	signal := ti.calculateEMA(koList, signalPeriod)
+
+	return ko, signal
+}
+
+// calculateVolumeProfile calculates Volume Profile (simplified version returning volume at price levels)
+func (ti *TechnicalIndicators) calculateVolumeProfile(high, low, close, volume *starlark.List, period int, levels int) map[float64]float64 {
+	length := close.Len()
+	if length < period {
+		return nil
+	}
+
+	profile := make(map[float64]float64)
+	
+	// Take the last 'period' bars for analysis
+	startIdx := length - period
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	// Find price range
+	var minPrice, maxPrice float64 = math.MaxFloat64, -math.MaxFloat64
+	for i := startIdx; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		
+		if h > maxPrice {
+			maxPrice = h
+		}
+		if l < minPrice {
+			minPrice = l
+		}
+	}
+
+	// Create price levels
+	priceStep := (maxPrice - minPrice) / float64(levels)
+	if priceStep == 0 {
+		return profile
+	}
+
+	// Initialize volume at each level
+	for i := 0; i < levels; i++ {
+		priceLevel := minPrice + float64(i)*priceStep
+		profile[priceLevel] = 0
+	}
+
+	// Distribute volume across price levels
+	for i := startIdx; i < length; i++ {
+		h, _ := starlark.AsFloat(high.Index(i))
+		l, _ := starlark.AsFloat(low.Index(i))
+		v, _ := starlark.AsFloat(volume.Index(i))
+
+		// Distribute volume proportionally across the high-low range
+		barRange := h - l
+		if barRange == 0 {
+			// If no range, assign all volume to the close price level
+			c, _ := starlark.AsFloat(close.Index(i))
+			levelIdx := int((c - minPrice) / priceStep)
+			if levelIdx >= 0 && levelIdx < levels {
+				priceLevel := minPrice + float64(levelIdx)*priceStep
+				profile[priceLevel] += v
+			}
+		} else {
+			// Distribute volume across all price levels within the bar's range
+			volumePerLevel := v / (barRange / priceStep)
+			
+			startLevel := int((l - minPrice) / priceStep)
+			endLevel := int((h - minPrice) / priceStep)
+			
+			if startLevel < 0 {
+				startLevel = 0
+			}
+			if endLevel >= levels {
+				endLevel = levels - 1
+			}
+			
+			for levelIdx := startLevel; levelIdx <= endLevel; levelIdx++ {
+				priceLevel := minPrice + float64(levelIdx)*priceStep
+				profile[priceLevel] += volumePerLevel
+			}
+		}
+	}
+
+	return profile
+}

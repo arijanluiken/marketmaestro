@@ -739,12 +739,383 @@ if current_ac > 0:
     # Acceleration in current trend direction
 ```
 
+#### Hull Moving Average (HMA)
+```python
+hma_values = hull_ma(prices, period)
+```
+- **prices**: List of price values
+- **period**: HMA period (integer)
+- **Returns**: List of Hull Moving Average values
+
+```python
+# Example: 21-period Hull Moving Average
+hma21 = hull_ma(close, 21)
+current_hma = hma21[-1]  # Latest HMA value
+```
+
+#### Weighted Moving Average (WMA)
+```python
+wma_values = wma(prices, period)
+```
+- **prices**: List of price values
+- **period**: WMA period (integer)
+- **Returns**: List of Weighted Moving Average values
+
+```python
+# Example: 10-period WMA
+wma10 = wma(close, 10)
+current_wma = wma10[-1]  # Latest WMA value
+```
+
+#### Arnaud Legoux Moving Average (ALMA)
+```python
+alma_values = alma(prices, period, offset=0.85, sigma=6.0)
+```
+- **prices**: List of price values
+- **period**: ALMA period (integer)
+- **offset**: Phase offset (default: 0.85)
+- **sigma**: Smoothing factor (default: 6.0)
+- **Returns**: List of ALMA values
+
+```python
+# Example: 21-period ALMA with default parameters
+alma21 = alma(close, 21)
+current_alma = alma21[-1]
+```
+
+#### Triple Exponential Moving Average (TEMA)
+```python
+tema_values = tema(prices, period)
+```
+- **prices**: List of price values
+- **period**: TEMA period (integer)
+- **Returns**: List of TEMA values with reduced lag
+
+```python
+# Example: 14-period TEMA
+tema14 = tema(close, 14)
+current_tema = tema14[-1]
+```
+
+### Momentum Indicators
+
+#### Chande Momentum Oscillator (CMO)
+```python
+cmo_values = cmo(prices, period=14)
+```
+- **prices**: List of price values
+- **period**: CMO period (default: 14)
+- **Returns**: List of CMO values (-100 to 100)
+
+```python
+# Example: 14-period CMO
+cmo14 = cmo(close, 14)
+current_cmo = cmo14[-1]
+
+if current_cmo > 50:
+    # Strong bullish momentum
+elif current_cmo < -50:
+    # Strong bearish momentum
+```
+
+#### Know Sure Thing (KST)
+```python
+kst_result = kst(prices, roc1=10, roc2=15, roc3=20, roc4=30, sma1=10, sma2=10, sma3=10, sma4=15)
+```
+- **prices**: List of price values
+- **roc1-4**: Rate of Change periods (default: 10,15,20,30)
+- **sma1-4**: SMA smoothing periods (default: 10,10,10,15)
+- **Returns**: Dictionary with "kst" and "signal" arrays
+
+```python
+# Example: KST oscillator with signal line
+kst_data = kst(close)
+kst_line = kst_data["kst"]
+signal_line = kst_data["signal"]
+
+# Check for bullish crossover
+if kst_line[-1] > signal_line[-1] and kst_line[-2] <= signal_line[-2]:
+    # KST crossed above signal line
+```
+
+#### Schaff Trend Cycle (STC)
+```python
+stc_values = stc(prices, fast_period=23, slow_period=50, cycle_period=10, factor=0.5)
+```
+- **prices**: List of price values
+- **fast_period**: Fast MACD period (default: 23)
+- **slow_period**: Slow MACD period (default: 50)
+- **cycle_period**: Stochastic period (default: 10)
+- **factor**: Smoothing factor (default: 0.5)
+- **Returns**: List of STC values (0-100)
+
+```python
+# Example: STC for trend cycle detection
+stc_line = stc(close, 12, 26, 10, 0.5)
+current_stc = stc_line[-1]
+
+if current_stc > 75:
+    # Overbought trend cycle
+elif current_stc < 25:
+    # Oversold trend cycle
+```
+
+### Volatility Indicators
+
+#### Chandelier Exit
+```python
+chandelier_result = chandelier_exit(high, low, close, period=22, multiplier=3.0)
+```
+- **high, low, close**: Price arrays
+- **period**: ATR period (default: 22)
+- **multiplier**: ATR multiplier (default: 3.0)
+- **Returns**: Dictionary with "long_exit" and "short_exit" arrays
+
+```python
+# Example: Chandelier Exit levels
+chandelier = chandelier_exit(high, low, close, 22, 3.0)
+long_exit = chandelier["long_exit"][-1]
+short_exit = chandelier["short_exit"][-1]
+current_price = close[-1]
+
+if current_price < long_exit:
+    # Exit long position
+elif current_price > short_exit:
+    # Exit short position
+```
+
+#### Chande Kroll Stop
+```python
+chande_result = chande_kroll_stop(high, low, close, period=10, multiplier=3.0)
+```
+- **high, low, close**: Price arrays  
+- **period**: Period for calculation (default: 10)
+- **multiplier**: ATR multiplier (default: 3.0)
+- **Returns**: Dictionary with "long_stop" and "short_stop" arrays
+
+```python
+# Example: Chande Kroll Stop levels
+ck_stop = chande_kroll_stop(high, low, close, 10, 3.0)
+long_stop = ck_stop["long_stop"][-1]
+short_stop = ck_stop["short_stop"][-1]
+```
+
+#### Price Channel
+```python
+channel_result = price_channel(high, low, period=20)
+```
+- **high, low**: Price arrays
+- **period**: Channel period (default: 20)
+- **Returns**: Dictionary with "upper", "middle", "lower" channel lines
+
+```python
+# Example: Price Channel breakout strategy
+channels = price_channel(high, low, 20)
+upper_channel = channels["upper"][-1]
+lower_channel = channels["lower"][-1]
+middle_channel = channels["middle"][-1]
+current_price = close[-1]
+
+if current_price > upper_channel:
+    # Upside breakout
+elif current_price < lower_channel:
+    # Downside breakout
+```
+
+#### Mass Index
+```python
+mass_values = mass_index(high, low, period=9, sum_period=25)
+```
+- **high, low**: Price arrays
+- **period**: EMA period for range calculation (default: 9)
+- **sum_period**: Summation period (default: 25)
+- **Returns**: List of Mass Index values
+
+```python
+# Example: Mass Index reversal detection
+mass = mass_index(high, low, 9, 25)
+current_mass = mass[-1]
+
+if current_mass > 27:
+    # Potential reversal signal
+elif current_mass < 26.5:
+    # Trend continuation likely
+```
+
+### Volume Indicators
+
+#### Ease of Movement (EMV)
+```python
+emv_values = emv(high, low, close, volume, period=14)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **period**: Smoothing period (default: 14)
+- **Returns**: List of EMV values
+
+```python
+# Example: Ease of Movement analysis
+emv_line = emv(high, low, close, volume, 14)
+current_emv = emv_line[-1]
+
+if current_emv > 0:
+    # Easy upward movement
+else:
+    # Difficult upward movement
+```
+
+#### Force Index
+```python
+fi_values = force_index(close, volume, period=13)
+```
+- **close, volume**: Price and volume arrays
+- **period**: EMA smoothing period (default: 13)
+- **Returns**: List of Force Index values
+
+```python
+# Example: Force Index trend confirmation
+fi = force_index(close, volume, 13)
+current_fi = fi[-1]
+
+if current_fi > 0:
+    # Buying pressure
+else:
+    # Selling pressure
+```
+
+#### Elder's Force Index
+```python
+elder_fi_result = elder_force_index(close, volume, short_period=2, long_period=13)
+```
+- **close, volume**: Price and volume arrays
+- **short_period**: Short EMA period (default: 2)
+- **long_period**: Long EMA period (default: 13)
+- **Returns**: Dictionary with "short" and "long" Force Index arrays
+
+```python
+# Example: Elder's Force Index signals
+elder_fi = elder_force_index(close, volume, 2, 13)
+short_fi = elder_fi["short"][-1]
+long_fi = elder_fi["long"][-1]
+
+if short_fi > 0 and long_fi > 0:
+    # Strong buying pressure
+elif short_fi < 0 and long_fi < 0:
+    # Strong selling pressure
+```
+
+#### Volume Oscillator
+```python
+vol_osc_values = volume_oscillator(volume, fast_period=5, slow_period=10)
+```
+- **volume**: Volume array
+- **fast_period**: Fast MA period (default: 5)
+- **slow_period**: Slow MA period (default: 10)
+- **Returns**: List of volume oscillator values (percentage)
+
+```python
+# Example: Volume Oscillator trend detection
+vol_osc = volume_oscillator(volume, 5, 10)
+current_vol_osc = vol_osc[-1]
+
+if current_vol_osc > 0:
+    # Volume expanding
+else:
+    # Volume contracting
+```
+
+#### Volume Profile
+```python
+profile_data = volume_profile(high, low, close, volume, period=100, levels=20)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **period**: Number of bars to analyze (default: 100)
+- **levels**: Number of price levels (default: 20)
+- **Returns**: Dictionary mapping price levels to volume
+
+```python
+# Example: Volume Profile analysis
+vp = volume_profile(high, low, close, volume, 100, 20)
+
+# Find highest volume price level (Point of Control)
+max_volume = 0
+poc_price = 0
+for price, vol in vp.items():
+    if vol > max_volume:
+        max_volume = vol
+        poc_price = price
+
+print(f"Point of Control: {poc_price}")
+```
+
+#### Klinger Volume Oscillator
+```python
+klinger_result = klinger_oscillator(high, low, close, volume, fast_period=34, slow_period=55, signal_period=13)
+```
+- **high, low, close, volume**: Price and volume arrays
+- **fast_period**: Fast EMA period (default: 34)
+- **slow_period**: Slow EMA period (default: 55)
+- **signal_period**: Signal line period (default: 13)
+- **Returns**: Dictionary with "oscillator" and "signal" arrays
+
+```python
+# Example: Klinger Oscillator signals
+klinger = klinger_oscillator(high, low, close, volume, 34, 55, 13)
+ko_line = klinger["oscillator"][-1]
+signal_line = klinger["signal"][-1]
+
+if ko_line > signal_line:
+    # Accumulation signal
+else:
+    # Distribution signal
+```
+
+### Trend/Momentum Indicators
+
+#### Balance of Power (BOP)
+```python
+bop_values = bop(open, high, low, close)
+```
+- **open, high, low, close**: OHLC price arrays
+- **Returns**: List of BOP values (-1 to 1)
+
+```python
+# Example: Balance of Power analysis
+bop_line = bop(open, high, low, close)
+current_bop = bop_line[-1]
+
+if current_bop > 0.5:
+    # Strong buying pressure
+elif current_bop < -0.5:
+    # Strong selling pressure
+```
+
+#### Coppock Curve
+```python
+coppock_values = coppock_curve(prices, roc1_period=14, roc2_period=11, wma_period=10)
+```
+- **prices**: Price array
+- **roc1_period**: First ROC period (default: 14)
+- **roc2_period**: Second ROC period (default: 11)
+- **wma_period**: WMA smoothing period (default: 10)
+- **Returns**: List of Coppock Curve values
+
+```python
+# Example: Coppock Curve long-term reversal signals
+coppock = coppock_curve(close, 14, 11, 10)
+current_coppock = coppock[-1]
+previous_coppock = coppock[-2]
+
+if current_coppock > 0 and previous_coppock <= 0:
+    # Bullish long-term reversal signal
+```
+
 ### All Available Indicators Summary
 - **Basic**: `sma`, `ema`, `rsi`, `stddev`, `roc`
-- **Advanced Momentum**: `macd`, `stochastic`, `williams_r`, `cci`, `mfi`, `tsi`, `ultimate_oscillator`, `stochastic_rsi`
-- **Volatility**: `bollinger`, `atr`, `keltner`, `donchian`, `supertrend`
-- **Volume**: `vwap`, `obv`, `mfi`, `chaikin_oscillator`
-- **Trend**: `adx`, `parabolic_sar`, `ichimoku`, `aroon`, `kama`, `detrended`, `williams_alligator`, `vortex`
+- **Moving Averages**: `sma`, `ema`, `wma`, `hull_ma`, `alma`, `tema`
+- **Advanced Momentum**: `macd`, `stochastic`, `williams_r`, `cci`, `mfi`, `tsi`, `ultimate_oscillator`, `stochastic_rsi`, `cmo`, `kst`, `stc`
+- **Volatility**: `bollinger`, `atr`, `keltner`, `donchian`, `supertrend`, `chandelier_exit`, `chande_kroll_stop`, `price_channel`, `mass_index`
+- **Volume**: `vwap`, `obv`, `mfi`, `chaikin_oscillator`, `emv`, `force_index`, `elder_force_index`, `volume_oscillator`, `volume_profile`, `klinger_oscillator`
+- **Trend**: `adx`, `parabolic_sar`, `ichimoku`, `aroon`, `kama`, `detrended`, `williams_alligator`, `vortex`, `bop`, `coppock_curve`
 - **Support/Resistance**: `pivot_points`, `fibonacci`
 - **Advanced Analysis**: `advanced_cci`, `elder_ray`
 - **Candlestick Patterns**: `heikin_ashi`

@@ -61,7 +61,7 @@ def settings():
 ```python
 def on_kline(kline):
     """Handle new kline/candlestick data"""
-    current_price = kline.close
+    current_price = kline.close  # Using attribute access
     
     # Your trading logic here
     if should_buy():
@@ -160,12 +160,9 @@ These variables are automatically available in all strategy functions:
 ### Market Data
 - **`symbol`** (string): Current trading pair (e.g., "BTCUSDT")
 - **`exchange`** (string): Exchange name (e.g., "bybit", "bitvavo")
-- **`close`** (list): Array of closing prices from historical klines
-- **`open`** (list): Array of opening prices from historical klines  
-- **`high`** (list): Array of high prices from historical klines
-- **`low`** (list): Array of low prices from historical klines
-- **`volume`** (list): Array of volume data from historical klines
 - **`klines`** (list): Full historical kline objects
+
+**Note**: Global price arrays (`close`, `open`, `high`, `low`, `volume`) have been removed. Strategies should extract price data from callback parameters or maintain their own internal buffers.
 
 ### Configuration
 - **`config`** (dict): Strategy configuration from settings() merged with user overrides
@@ -175,10 +172,10 @@ These variables are automatically available in all strategy functions:
 - **`ask`** (float): Best ask price  
 - **`spread`** (float): Current bid-ask spread
 
-### Callback-Specific Variables
-- **`kline`** (object): Current kline in `on_kline()` callback
-- **`orderbook`** (object): Current orderbook in `on_orderbook()` callback
-- **`ticker`** (object): Current ticker in `on_ticker()` callback
+### Callback-Specific Variables  
+- **`kline`** (object): Current kline in `on_kline()` callback (has attributes: timestamp, open, high, low, close, volume, symbol)
+- **`orderbook`** (object): Current orderbook in `on_orderbook()` callback (dictionary with bids, asks, symbol, timestamp)
+- **`ticker`** (object): Current ticker in `on_ticker()` callback (dictionary with symbol, price, volume, timestamp)
 
 ## Built-in Functions
 
@@ -208,8 +205,20 @@ sma_values = sma(prices, period)
 
 ```python
 # Example: 20-period SMA of closing prices
-sma20 = sma(close, 20)
-current_sma = sma20[-1]  # Latest SMA value
+# Note: Extract price data from your internal buffer, not global arrays
+def on_kline(kline):
+    # Maintain internal price buffer
+    state["klines"].append({
+        "close": kline.close,
+        # ... other price data
+    })
+    
+    # Extract close prices 
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) >= 20:
+        sma20 = sma(close_prices, 20)
+        current_sma = sma20[-1]  # Latest SMA value
 ```
 
 #### Exponential Moving Average (EMA)
@@ -221,8 +230,14 @@ ema_values = ema(prices, period)
 - **Returns**: List of EMA values
 
 ```python
-# Example: 12-period EMA
-ema12 = ema(close, 12)
+# Example: 12-period EMA 
+# Extract from internal buffer in callback function
+def on_kline(kline):
+    # Update internal buffer with new kline data
+    close_prices = extract_closes_from_internal_buffer()
+    
+    if len(close_prices) >= 12:
+        ema12 = ema(close_prices, 12)
 ```
 
 ### Momentum Indicators
@@ -1242,43 +1257,79 @@ ticker = {
 state = {
     "position": 0,
     "last_signal": "hold",
-    "indicators": {}
+    "indicators": {},
+    "klines": []  # Internal buffer for price data
 }
 
-# Cache expensive calculations
-def update_indicators():
-    if len(close) >= 20:
-        state["indicators"]["sma20"] = sma(close, 20)
-        state["indicators"]["rsi"] = rsi(close, 14)
+def on_kline(kline):
+    # Update internal buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Keep buffer size manageable
+    if len(state["klines"]) > 100:
+        state["klines"] = state["klines"][-100:]
+    
+    # Extract price arrays for calculations
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    # Cache expensive calculations
+    if len(close_prices) >= 20:
+        state["indicators"]["sma20"] = sma(close_prices, 20)
+        state["indicators"]["rsi"] = rsi(close_prices, 14)
 ```
 
 ### 2. Data Validation
 ```python
 def on_kline(kline):
+    # Maintain internal buffer
+    state["klines"].append({
+        "close": kline.close,
+        "high": kline.high,
+        "low": kline.low,
+        # ... other data
+    })
+    
+    # Extract prices from internal buffer  
+    close_prices = [k["close"] for k in state["klines"]]
+    
     # Always validate data availability
-    if len(close) < 20:
+    if len(close_prices) < 20:
         return {"action": "hold", "reason": "Insufficient data"}
     
     # Check for valid indicator values
-    current_rsi = rsi(close, 14)[-1]
+    current_rsi = rsi(close_prices, 14)[-1]
     if math.isnan(current_rsi):
         return {"action": "hold", "reason": "Invalid RSI"}
 ```
 
 ### 3. Risk Management
 ```python
-def calculate_position_size(price, risk_percent=1.0):
+def calculate_position_size(kline, risk_percent=1.0):
     """Calculate position size based on risk percentage"""
     account_balance = 1000.0  # Get from config or API
     risk_amount = account_balance * (risk_percent / 100)
     
-    # Calculate stop loss distance
-    atr_value = atr(high, low, close, 14)[-1]
-    stop_distance = atr_value * 2  # 2 ATR stop
+    # Extract price data from internal buffer
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
+    close_prices = [k["close"] for k in state["klines"]]
     
-    if stop_distance > 0:
-        position_size = risk_amount / stop_distance
-        return min(position_size, account_balance * 0.1)  # Max 10% of balance
+    # Calculate stop loss distance using ATR
+    if len(close_prices) >= 14:
+        atr_values = atr(high_prices, low_prices, close_prices, 14)
+        atr_value = atr_values[-1]
+        stop_distance = atr_value * 2  # 2 ATR stop
+        
+        if stop_distance > 0:
+            position_size = risk_amount / stop_distance
+            return min(position_size, account_balance * 0.1)  # Max 10% of balance
     
     return 0.01  # Default small size
 ```
@@ -1289,18 +1340,27 @@ def confirm_signal(primary_signal):
     """Use multiple indicators to confirm signals"""
     confirmations = 0
     
+    # Extract price data from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    volume_data = [k["volume"] for k in state["klines"]]
+    
+    if len(close_prices) < 20:
+        return False
+    
     # RSI confirmation
-    current_rsi = rsi(close, 14)[-1]
+    rsi_values = rsi(close_prices, 14)
+    current_rsi = rsi_values[-1]
     if primary_signal == "buy" and current_rsi < 50:
         confirmations += 1
     elif primary_signal == "sell" and current_rsi > 50:
         confirmations += 1
     
     # Volume confirmation
-    current_volume = volume[-1]
-    avg_volume = sma(volume, 20)[-1]
-    if current_volume > avg_volume * 1.5:
-        confirmations += 1
+    if len(volume_data) >= 20:
+        current_volume = volume_data[-1]
+        avg_volume = sma(volume_data, 20)[-1]
+        if current_volume > avg_volume * 1.5:
+            confirmations += 1
     
     return confirmations >= 2  # Require at least 2 confirmations
 ```
@@ -1318,26 +1378,46 @@ def settings():
         "position_size": 0.01
     }
 
+# Strategy state to maintain kline buffer
 state = {
+    "klines": [],
     "position": 0,
     "entry_price": 0
 }
 
 def on_kline(kline):
-    # Get configuration
+    # Maintain internal kline buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
+    # Keep only what we need for calculations
     rsi_period = config.get("rsi_period", 14)
+    max_needed = rsi_period + 10
+    if len(state["klines"]) > max_needed:
+        state["klines"] = state["klines"][-max_needed:]
+    
+    # Check data availability
+    if len(state["klines"]) < rsi_period + 1:
+        return {"action": "hold", "reason": "Insufficient data"}
+    
+    # Extract close prices from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    # Calculate RSI
+    rsi_values = rsi(close_prices, rsi_period)
+    current_rsi = rsi_values[-1]
+    current_price = kline.close
+    
+    # Get configuration
     oversold = config.get("oversold", 30)
     overbought = config.get("overbought", 70)
     position_size = config.get("position_size", 0.01)
-    
-    # Check data availability
-    if len(close) < rsi_period + 1:
-        return {"action": "hold", "reason": "Insufficient data"}
-    
-    # Calculate RSI
-    rsi_values = rsi(close, rsi_period)
-    current_rsi = rsi_values[-1]
-    current_price = close[-1]
     
     # Entry signals
     if state["position"] == 0:  # No position
@@ -1379,27 +1459,46 @@ def settings():
     }
 
 state = {
+    "klines": [],
     "trend": "none",
     "position": 0
 }
 
 def on_kline(kline):
+    # Maintain internal kline buffer
+    state["klines"].append({
+        "timestamp": kline.timestamp,
+        "open": kline.open,
+        "high": kline.high,
+        "low": kline.low,
+        "close": kline.close,
+        "volume": kline.volume
+    })
+    
     # Configuration
     fast_period = config.get("fast_ma", 12)
     slow_period = config.get("slow_ma", 26)
     
-    # Data validation
+    # Data validation - keep sufficient buffer
     min_periods = max(fast_period, slow_period, 14) + 5
-    if len(close) < min_periods:
+    if len(state["klines"]) > min_periods * 2:
+        state["klines"] = state["klines"][-min_periods * 2:]
+    
+    if len(state["klines"]) < min_periods:
         return {"action": "hold", "reason": "Insufficient data"}
     
-    # Calculate indicators
-    fast_ma = ema(close, fast_period)
-    slow_ma = ema(close, slow_period)
-    rsi_values = rsi(close, 14)
-    atr_values = atr(high, low, close, 14)
+    # Extract price arrays from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    high_prices = [k["high"] for k in state["klines"]]
+    low_prices = [k["low"] for k in state["klines"]]
     
-    current_price = close[-1]
+    # Calculate indicators
+    fast_ma = ema(close_prices, fast_period)
+    slow_ma = ema(close_prices, slow_period)
+    rsi_values = rsi(close_prices, 14)
+    atr_values = atr(high_prices, low_prices, close_prices, 14)
+    
+    current_price = kline.close
     current_fast = fast_ma[-1]
     current_slow = slow_ma[-1]
     current_rsi = rsi_values[-1]
@@ -1473,8 +1572,13 @@ def on_kline(kline):
 #### 1. Insufficient Data
 ```python
 # Always check data length before indicator calculations
-if len(close) < required_periods:
-    return {"action": "hold", "reason": "Insufficient data"}
+def on_kline(kline):
+    # Extract from internal buffer
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    required_periods = 20  # Or whatever your strategy needs
+    if len(close_prices) < required_periods:
+        return {"action": "hold", "reason": "Insufficient data"}
 ```
 
 #### 2. NaN Values
@@ -1498,10 +1602,15 @@ else:
 #### 4. Array Index Errors
 ```python
 # Use safe array access
-if len(close) > 0:
-    current_price = close[-1]
-else:
-    return {"action": "hold", "reason": "No price data"}
+def on_kline(kline):
+    close_prices = [k["close"] for k in state["klines"]]
+    
+    if len(close_prices) > 0:
+        current_price = close_prices[-1]
+        # Or use the kline parameter directly
+        current_price = kline.close
+    else:
+        return {"action": "hold", "reason": "No price data"}
 ```
 
 ### Debug Logging
